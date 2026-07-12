@@ -1,0 +1,6 @@
+/modules
+.claude/
+deployment/.env.dev
+deployment/.env.prod
+# Deploy env snapshots capture full .env.prod (passwords, JWT, MinIO/SMTP creds)
+deployment/history/snapshots/

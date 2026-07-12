@@ -1,0 +1,242 @@
+# Grafana unified-alerting rules for the __project__ beta.
+#
+# Covers the five alerts named in DEPLOYMENT-PLAN.md §Monitoring:
+#   - API 5xx rate
+#   - API p95 latency
+#   - Postgres connection-pool saturation
+#   - Host disk usage > 80 %
+#   - Container restart loop
+#
+# The Prometheus metric names (`http_requests_total`, `http_request_duration_seconds_bucket`)
+# follow the convention used by the dashboards under
+# `grafana/provisioning/dashboards/`. If backbone-observability emits
+# different names (e.g. `axum_http_requests_total`), fix both the
+# dashboards and these rules in lockstep.
+#
+# DB saturation is computed from `pg_stat_activity_count` (postgres-exporter)
+# vs. `pg_settings_max_connections`. This measures Postgres backend use,
+# not the service's sqlx pool directly — close enough for a beta-size
+# single-replica deployment.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: golden-signals
+    folder: __PROJECT__
+    interval: 1m
+    rules:
+      # ───── API: 5xx rate ────────────────────────────────────────────
+      - uid: __project__-api-5xx-rate
+        title: API 5xx rate elevated
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource: { type: prometheus, uid: prometheus }
+              expr: sum(rate(http_requests_total{job="__project__-service",status=~"5.."}[5m]))
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [0.1] }
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { type: last }
+                  type: query
+        annotations:
+          summary: 5xx rate above 0.1 req/s on __project__-service
+          description: |
+            __project__-service has been returning 5xx responses at > 0.1/s for
+            5 minutes. Investigate `docker compose logs __project__-service` and
+            recent deploys. See the Golden Signals dashboard for status
+            breakdown.
+        labels:
+          severity: warning
+          service: __project__-service
+
+      # ───── API: p95 latency ─────────────────────────────────────────
+      - uid: __project__-api-p95-latency
+        title: API p95 latency > 1s
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                histogram_quantile(
+                  0.95,
+                  sum by (le) (
+                    rate(http_request_duration_seconds_bucket{job="__project__-service"}[5m])
+                  )
+                )
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [1.0] }
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { type: last }
+                  type: query
+        annotations:
+          summary: __project__-service p95 latency > 1s
+          description: |
+            95th-percentile request latency has exceeded 1 second for 10
+            minutes. Typical culprits: slow DB queries, saturated pool, or
+            downstream MinIO slowness. Check the Postgres Health dashboard
+            and `pg_stat_activity` for long-running queries.
+        labels:
+          severity: warning
+          service: __project__-service
+
+      # ───── Postgres: connection saturation ──────────────────────────
+      - uid: __project__-pg-saturation
+        title: Postgres connections > 80 % of max
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                sum(pg_stat_activity_count)
+                /
+                ignoring(datname, state) group_left
+                  pg_settings_max_connections
+                * 100
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [80] }
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { type: last }
+                  type: query
+        annotations:
+          summary: Postgres connection use > 80 % of max_connections
+          description: |
+            Total Postgres backends now exceed 80 % of `max_connections`.
+            At 100 % the DB will refuse new connections and the service
+            will fail requests. Either raise `max_connections` (needs
+            Postgres restart) or tune the sqlx pool ceiling in
+            `apps/__project__-service/config/application.yml`.
+        labels:
+          severity: warning
+          service: postgres
+
+      # ───── Host: disk > 80 % ────────────────────────────────────────
+      - uid: __project__-disk-usage
+        title: Host disk usage > 80 %
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                100 - (
+                  node_filesystem_avail_bytes{mountpoint="/host",fstype!~"tmpfs|overlay"}
+                  /
+                  node_filesystem_size_bytes{mountpoint="/host",fstype!~"tmpfs|overlay"}
+                ) * 100
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [80] }
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { type: last }
+                  type: query
+        annotations:
+          summary: VPS root disk > 80 % full
+          description: |
+            Root filesystem usage above 80 %. The biggest growers are
+            typically `/var/lib/docker/volumes` (postgres + minio) and
+            `/var/backups`. Check the Host & Container Resources dashboard,
+            consider pruning old Docker images (`docker image prune -a`),
+            verify backup retention in `pg-backup.sh`, and tune Loki +
+            Prometheus retention if log/metric growth is the cause.
+        labels:
+          severity: warning
+          tier: host
+
+      # ───── Container: restart loop ──────────────────────────────────
+      - uid: __project__-container-restart
+        title: Container restarting repeatedly
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                changes(container_start_time_seconds{name!="",image!=""}[15m]) > 2
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { type: last }
+                  type: query
+        annotations:
+          summary: Container restarted more than twice in 15 minutes
+          description: |
+            At least one container has restarted >2 times in the last 15
+            minutes (labels include `name=` for the offending container).
+            Check `docker compose logs <name>` — usually a crash loop from
+            config or startup-dependency failure.
+        labels:
+          severity: critical
+          tier: infra

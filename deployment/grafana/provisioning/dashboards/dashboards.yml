@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: __project__
+    orgId: 1
+    folder: __PROJECT__
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

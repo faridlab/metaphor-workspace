@@ -1,0 +1,29 @@
+# Metaphor workspace manifest (TEMPLATE).
+# - `module` projects are pinned upstream deps: `remote:` + `ref:` → synced into modules/ by `metaphor sync`
+#   (modules/ is git-ignored — never vendored). Bump `ref:` to upgrade, then re-sync.
+# - `backend-service`/`webapp`/`mobileapp` projects live under apps/ and consume modules via depends_on.
+# Rename the `__project__` placeholder to your product, and add your own modules/apps below.
+version: 1
+projects:
+- name: backbone-framework
+  type: module
+  path: modules/backbone-framework
+  remote: https://github.com/faridlab/backbone-framework
+  ref: v2.6.1
+- name: backbone-sapiens
+  type: module
+  path: modules/backbone-sapiens
+  remote: https://github.com/faridlab/backbone-sapiens
+  ref: v0.1.20
+- name: backbone-bucket
+  type: module
+  path: modules/backbone-bucket
+  remote: https://github.com/faridlab/backbone-bucket
+  ref: v0.1.17
+- name: __project__-service
+  type: backend-service
+  path: apps/__project__-service
+  depends_on:
+  - backbone-framework
+  - backbone-sapiens
+  - backbone-bucket

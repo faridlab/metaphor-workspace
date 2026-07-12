@@ -1,0 +1,123 @@
+# Caddy v2 — single-host routing for the __project__ beta stack.
+#
+# TLS: auto Let's Encrypt via ACME_EMAIL. DNS A records for all subdomains
+# must resolve to this VPS before first boot or cert issuance will fail.
+#
+# Subdomains follow DEPLOYMENT-PLAN.md:
+#   api       REST upstream           __project__-service:3000
+#   grpc      gRPC upstream (h2c)     __project__-service:50051
+#   app       customer webapp         __project__-webapp-customer:80
+#   provider  provider webapp         __project__-webapp-provider:80
+#   admin     admin panel             __project__-webapp-admin:80
+#   download  provider-app download   __project__-webapp-download:80
+#   bucket    file serving            mode A → minio, mode B → service
+#   s3        raw MinIO               minio:9000
+#   invoice   public receipt page     __project__-service:3000 (rewritten to /invoice/<provider>/<outlet>/<code>)
+#   grafana   dashboards              grafana:3000
+#   status    uptime-kuma             uptime-kuma:3001
+
+{
+    email {$ACME_EMAIL}
+    servers {
+        protocols h1 h2 h3
+    }
+}
+
+# ─── REST API ──────────────────────────────────────────────────────────
+api.{$DOMAIN} {
+    encode zstd gzip
+    reverse_proxy __project__-service:3000
+}
+
+# ─── gRPC (h2c upstream) ──────────────────────────────────────────────
+grpc.{$DOMAIN} {
+    reverse_proxy h2c://__project__-service:50051
+}
+
+# ─── Customer webapp ──────────────────────────────────────────────────
+app.{$DOMAIN} {
+    encode zstd gzip
+    reverse_proxy __project__-webapp-customer:80
+}
+
+# ─── Provider webapp ──────────────────────────────────────────────────
+provider.{$DOMAIN} {
+    encode zstd gzip
+    reverse_proxy __project__-webapp-provider:80
+}
+
+# ─── Admin panel ──────────────────────────────────────────────────────
+admin.{$DOMAIN} {
+    encode zstd gzip
+    reverse_proxy __project__-webapp-admin:80
+}
+
+# ─── Provider mobile-app download page ────────────────────────────────
+# Public landing page that links to the latest APK. Used while the
+# provider mobile app is not yet on Play Store. The APK itself is NOT
+# served from this container — the page links to GitHub Releases on
+# the __project__-mobile-provider repo, where a CI workflow attaches the
+# APK on every `vX.Y.Z` tag push. This keeps the image small and
+# decouples app version bumps from page rebuilds.
+download.{$DOMAIN} {
+    encode zstd gzip
+    reverse_proxy __project__-webapp-download:80
+}
+
+# ─── Bucket: mode A (public fast-path) + mode B (auth-aware redirect) ─
+bucket.{$DOMAIN} {
+    encode zstd gzip
+
+    # Mode A: /public/* → MinIO public bucket, no service hop. The bucket
+    # name is sourced from the MINIO_PUBLIC_BUCKET env var (passed to the
+    # caddy container in compose.yaml) so renaming propagates from
+    # .env.prod without editing this file.
+    handle_path /public/* {
+        rewrite * /{$MINIO_PUBLIC_BUCKET}{uri}
+        reverse_proxy minio:9000
+    }
+
+    # Mode B: everything else → service serving_router at /cdn/<key>.
+    handle {
+        rewrite * /cdn{uri}
+        reverse_proxy __project__-service:3000
+    }
+}
+
+# ─── Raw MinIO (mode C: presigned URLs) ───────────────────────────────
+s3.{$DOMAIN} {
+    reverse_proxy minio:9000
+}
+
+# ─── Public receipt page (customer share links) ───────────────────────
+# `https://invoice.{DOMAIN}/{providerCode}/{outletCode}/{invoiceCode}`
+# → service `/invoice/{providerCode}/{outletCode}/{invoiceCode}`.
+# Unauthenticated by design — the URL is meant to be shared via WhatsApp /
+# SMS / etc. and contains non-sensitive data only (item names, prices,
+# outlet contact). The handler issues `Cache-Control: public, max-age=30`,
+# so a customer hitting refresh doesn't hammer the DB but order-status
+# changes still propagate quickly.
+invoice.{$DOMAIN} {
+    encode zstd gzip
+    # Pass `/assets/*` through unchanged (the receipt HTML references
+    # `/assets/logo.png` absolutely, and the service exposes it at that path).
+    # Everything else is the receipt path and gets prefixed with `/invoice`.
+    @receipt {
+        not path /assets/*
+    }
+    rewrite @receipt /invoice{uri}
+    reverse_proxy __project__-service:3000
+}
+
+# ─── Grafana (dashboards) ─────────────────────────────────────────────
+# Grafana's own login gates access; consider adding an IP allowlist
+# via `@allowed { remote_ip … }` before public beta if the traffic
+# profile warrants it.
+grafana.{$DOMAIN} {
+    reverse_proxy grafana:3000
+}
+
+# ─── Uptime Kuma (public status page) ─────────────────────────────────
+status.{$DOMAIN} {
+    reverse_proxy uptime-kuma:3001
+}

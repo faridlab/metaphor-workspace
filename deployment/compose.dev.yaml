@@ -1,0 +1,264 @@
+# Local developer stack. One-command `metaphor docker up --env dev`.
+#
+# Differences from compose.yaml (prod/uat):
+#   - Apps run from local source with hot reload (cargo-watch / vite dev).
+#   - No Caddy: services bind 127.0.0.1 directly. Browser hits localhost.
+#   - No observability (prometheus/loki/grafana/exporters).
+#   - No migrations stub (run `metaphor migration run-all` against the
+#     `127.0.0.1:5432` postgres when needed).
+#
+# Networks:
+#   backend — postgres + redis + minio + __project__-service.
+#   (Frontends only need the host network indirectly, via bound ports.)
+
+# Project name. Without this, docker compose defaults to the directory it
+# was invoked from (`deployment-`), which leaks the deployment-folder name
+# into every container/network/volume identifier. Set it explicitly so the
+# stack is named after the workspace regardless of cwd or compose file path.
+name: __project__-metaphora
+
+services:
+  # ───── Data stores ─────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redisdata:/data
+    networks: [backend]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: quay.io/minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - miniodata:/data
+    networks: [backend]
+    ports:
+      - "127.0.0.1:9000:9000"   # S3 API — __project__-service + browser hit this
+      - "127.0.0.1:9001:9001"   # Console
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_PRIVATE_BUCKET: ${MINIO_PRIVATE_BUCKET}
+      MINIO_PUBLIC_BUCKET: ${MINIO_PUBLIC_BUCKET}
+    networks: [backend]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/"$$MINIO_PRIVATE_BUCKET"
+        mc mb --ignore-existing local/"$$MINIO_PUBLIC_BUCKET"
+        mc anonymous set download local/"$$MINIO_PUBLIC_BUCKET"
+        mc anonymous set none     local/"$$MINIO_PRIVATE_BUCKET"
+        echo "minio-init: buckets ready"
+
+  # ───── Backend (Rust, hot reload via cargo-watch) ──────────────────────
+  # First build is several minutes (cargo cooks all deps from scratch).
+  # Subsequent restarts reuse the `cargo_target` + `cargo_registry` /
+  # `cargo_git` named volumes, so warm rebuilds on source edit are quick.
+  __project__-service:
+    build:
+      context: ../apps/__project__-service
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: dev
+      # Config loader picks the overlay by RUST_ENV (not APP_ENV) — keep both
+      # in sync so config/application-dev.yml is actually merged on startup.
+      RUST_ENV: dev
+      HOST: 0.0.0.0
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-false}
+      # Cap cargo's parallel rustc workers. The full lib build pulls in
+      # ~100 backbone-* crates; on a Docker Desktop default (often 4-8 GB)
+      # an unconstrained -j N invocation peaks above the container's
+      # memory ceiling and the host's OOM killer fires SIGKILL on rustc
+      # (looks like "could not compile … signal: 9"). 2 jobs is a safe
+      # default; bump via CARGO_BUILD_JOBS in the host shell if you have
+      # the RAM. Set to 1 if SIGKILL still happens.
+      CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-2}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_PRIVATE_BUCKET: ${MINIO_PRIVATE_BUCKET}
+      MINIO_PUBLIC_BUCKET: ${MINIO_PUBLIC_BUCKET}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ISSUER: ${JWT_ISSUER:-backbone-framework}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-backbone-users}
+      # Swagger UI (compiled in via Dockerfile.dev's `--features openapi`) is
+      # OPEN by default in dev. Export these on the host to gate it behind
+      # HTTP Basic auth; empty = open.
+      SWAGGER_UI_USER: ${SWAGGER_UI_USER:-}
+      SWAGGER_UI_PASSWORD: ${SWAGGER_UI_PASSWORD:-}
+    volumes:
+      # Source bind mount — edits on the host trigger cargo-watch.
+      - ../apps/__project__-service:/app
+      # Build artifacts in named volumes so they survive container
+      # restarts and don't leak into the host workspace.
+      - cargo_target:/app/target
+      - cargo_registry:/usr/local/cargo/registry
+      - cargo_git:/usr/local/cargo/git
+    networks: [backend]
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  # ───── Frontends (Vite dev server) — OPT-IN ────────────────────────────
+  # Disabled by default. Most teams run `pnpm dev` on the host (faster
+  # HMR, better IDE support). Opt in by setting COMPOSE_PROFILES=frontends
+  # in .env.dev, or one-shot via `metaphor docker up --env dev
+  # --service __project__-webapp-customer --service __project__-webapp-provider
+  # --service __project__-webapp-admin`.
+  #
+  # `pnpm install` runs on first start; `node_modules` lives in an
+  # anonymous volume so it isn't shadowed by the host bind mount and
+  # doesn't drag host-architecture binaries into the container.
+  __project__-webapp-customer:
+    profiles: [frontends]
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      VITE_API_BASE_URL: http://localhost:3000
+    volumes:
+      - ../apps/__project__-webapp-customer:/app
+      - /app/node_modules
+    networks: [backend]
+    ports:
+      - "127.0.0.1:5175:5175"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        corepack enable
+        pnpm install --frozen-lockfile
+        exec pnpm dev --host 0.0.0.0
+
+  __project__-webapp-provider:
+    profiles: [frontends]
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      VITE_API_BASE_URL: http://localhost:3000
+    volumes:
+      - ../apps/__project__-webapp-provider:/app
+      - /app/node_modules
+    networks: [backend]
+    ports:
+      # Must match the app's pinned vite port (vite.config.ts → server.port),
+      # same convention as the other frontends (customer 5175, admin 5174).
+      - "127.0.0.1:5000:5000"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        corepack enable
+        pnpm install --frozen-lockfile
+        exec pnpm dev --host 0.0.0.0
+
+  __project__-webapp-admin:
+    profiles: [frontends]
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      VITE_API_BASE_URL: http://localhost:3000
+    volumes:
+      - ../apps/__project__-webapp-admin:/app
+      - /app/node_modules
+    networks: [backend]
+    ports:
+      - "127.0.0.1:5174:5174"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        corepack enable
+        pnpm install --frozen-lockfile
+        exec pnpm dev --host 0.0.0.0
+
+  __project__-webapp-download:
+    profiles: [frontends]
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      VITE_API_BASE_URL: http://localhost:3000
+    volumes:
+      - ../apps/__project__-webapp-download:/app
+      - /app/node_modules
+    networks: [backend]
+    ports:
+      - "127.0.0.1:5176:5176"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        corepack enable
+        pnpm install --frozen-lockfile
+        exec pnpm dev --host 0.0.0.0
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  cargo_target:
+  cargo_registry:
+  cargo_git:
+
+networks:
+  backend:

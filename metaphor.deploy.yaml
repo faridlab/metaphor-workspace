@@ -1,0 +1,106 @@
+# Deployment targets for `metaphor docker` (local) and `metaphor deploy` (remote).
+# See docs/DEPLOY-COMMANDS.md for usage.
+#
+# Convention:
+#   - environments without `host:` are LOCAL → operated by `metaphor docker`
+#   - environments with    `host:` are REMOTE → operated by `metaphor deploy`
+
+version: 1
+
+defaults:
+  registry: ghcr.io/faridlab
+  compose_file: deployment/compose.yaml
+  ssh_user: deploy
+  deploy_dir: /srv/__project__
+  migrate_command: "__project__-service migrate"
+
+environments:
+  # Local developer stack. Run: `metaphor docker up --env dev`.
+  # Uses a dedicated compose file (hot-reload-capable images, no Caddy /
+  # observability) instead of the prod stack in deployment/compose.yaml.
+  dev:
+    compose_file: deployment/compose.dev.yaml
+    env_file: deployment/.env.dev
+    images:
+      __project__-service:
+        context: apps/__project__-service
+        tag_env: SERVICE_TAG
+      __project__-webapp-customer:
+        context: apps/__project__-webapp-customer
+        tag_env: WEBAPP_CUSTOMER_TAG
+        build_args:
+          VITE_API_BASE_URL: http://localhost:3000
+      __project__-webapp-provider:
+        context: apps/__project__-webapp-provider
+        tag_env: WEBAPP_PROVIDER_TAG
+        build_args:
+          VITE_API_BASE_URL: http://localhost:3000
+      __project__-webapp-admin:
+        context: apps/__project__-webapp-admin
+        tag_env: WEBAPP_ADMIN_TAG
+        build_args:
+          VITE_API_BASE_URL: http://localhost:3000
+      __project__-webapp-download:
+        context: apps/__project__-webapp-download
+        tag_env: WEBAPP_DOWNLOAD_TAG
+        build_args:
+          VITE_API_BASE_URL: http://localhost:3000
+
+  # Pre-prod target. Run: `metaphor deploy push uat`.
+  uat:
+    host: uat.__project__.com
+    env_file: deployment/.env.uat
+    images:
+      __project__-service:
+        context: apps/__project__-service
+        tag_env: SERVICE_TAG
+      __project__-webapp-customer:
+        context: apps/__project__-webapp-customer
+        tag_env: WEBAPP_CUSTOMER_TAG
+        build_args:
+          VITE_API_BASE_URL: https://api.uat.__project__.com
+      __project__-webapp-provider:
+        context: apps/__project__-webapp-provider
+        tag_env: WEBAPP_PROVIDER_TAG
+        build_args:
+          VITE_API_BASE_URL: https://api.uat.__project__.com
+      __project__-webapp-admin:
+        context: apps/__project__-webapp-admin
+        tag_env: WEBAPP_ADMIN_TAG
+        build_args:
+          VITE_API_BASE_URL: https://api.uat.__project__.com
+      __project__-webapp-download:
+        context: apps/__project__-webapp-download
+        tag_env: WEBAPP_DOWNLOAD_TAG
+        build_args:
+          VITE_API_BASE_URL: https://api.uat.__project__.com
+
+  # Production. Requires explicit confirmation on every push.
+  prod:
+    host: __project__.com
+    env_file: deployment/.env.prod
+    require_confirm: true
+    images:
+      __project__-service:
+        context: apps/__project__-service
+        tag_env: SERVICE_TAG
+      __project__-webapp-customer:
+        context: apps/__project__-webapp-customer
+        tag_env: WEBAPP_CUSTOMER_TAG
+        build_args:
+          VITE_API_BASE_URL: https://api.__project__.com
+      __project__-webapp-provider:
+        context: apps/__project__-webapp-provider
+        tag_env: WEBAPP_PROVIDER_TAG
+        build_args:
+          VITE_API_BASE_URL: https://api.__project__.com
+      __project__-webapp-admin:
+        context: apps/__project__-webapp-admin
+        tag_env: WEBAPP_ADMIN_TAG
+        build_args:
+          VITE_API_BASE_URL: https://api.__project__.com
+      __project__-webapp-download:
+        context: apps/__project__-webapp-download
+        tag_env: WEBAPP_DOWNLOAD_TAG
+        build_args:
+          VITE_API_BASE_URL: https://api.__project__.com

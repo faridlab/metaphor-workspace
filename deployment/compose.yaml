@@ -1,0 +1,403 @@
+# Single-host beta stack for __project__.
+#
+# This is the PROD/UAT stack. Local dev uses deployment/compose.dev.yaml
+# instead — selected automatically by `metaphor docker up --env dev` via
+# metaphor.deploy.yaml.
+#
+# Networks:
+#   edge          — caddy-facing; only services Caddy reverse-proxies to.
+#   backend       — private; service + postgres + redis + minio.
+#   observability — private; monitoring stack.
+#
+# Conventions:
+#   - Image tags pinned via ${*_TAG} in .env.prod (git SHA). `:beta` is a
+#     human-moving pointer, never what compose reads.
+#   - No host ports on data stores. All inter-container traffic stays on
+#     private networks.
+#   - restart: unless-stopped everywhere so `reboot` brings the stack back.
+
+# Project name. Without this, docker compose defaults to the directory it
+# was invoked from (`deployment-`), which leaks the deployment-folder name
+# into every container/network/volume identifier. Set it explicitly so the
+# stack is named after the workspace regardless of cwd or compose file path.
+name: __project__-metaphora
+
+services:
+  # ───── Data stores ─────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Tuned for a 16 GB single-host deployment shared with redis, minio,
+    # the service, frontends, and the full observability stack. Postgres
+    # gets ~1/8 of host RAM as shared_buffers and assumes ~3/8 available
+    # in OS page cache. Retune when postgres moves to its own box.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=6GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_connections=100
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+    environment:
+      # Compose substitution errors out if these are unset/blank in .env.prod.
+      # Subsequent ${POSTGRES_*} references in this file rely on the same
+      # values; the strictness here is enough — if missing, deploy aborts.
+      POSTGRES_USER: ${POSTGRES_USER:?must be set in .env.prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must be set in .env.prod (long random string)}
+      POSTGRES_DB: ${POSTGRES_DB:?must be set in .env.prod}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    # Bind 5432 to localhost ONLY on the host. Internet-unreachable
+    # (UFW + 127.0.0.1 binding); only accessible via SSH tunnel from a
+    # laptop. Required for DBeaver / psql / metaphor-migration access.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redisdata:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: quay.io/minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?must be set in .env.prod}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?must be set in .env.prod (long random string)}
+    volumes:
+      - miniodata:/data
+    networks: [backend, edge]
+    ports:
+      # Console bound to localhost only — SSH-tunnel to reach it.
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # One-shot bucket/policy bootstrap. Runs once per `up`, exits 0.
+  #
+  # Provisions:
+  #   - the two buckets (private + public) with anonymous policies
+  #   - a least-privilege service user (MINIO_ACCESS_KEY/MINIO_SECRET_KEY
+  #     from apps/__project__-service/.env.prod) scoped to those buckets via
+  #     the `__project__-svc` policy
+  #
+  # Idempotent: `mc admin policy create` / `user add` errors on re-run are
+  # swallowed with `|| true`. To rotate the service key, delete the user
+  # manually (`mc admin user remove`) then bring the stack up again — bare
+  # `add` does not update an existing user's secret.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      # Service-owned creds (MINIO_ACCESS_KEY / MINIO_SECRET_KEY) live here.
+      # Both this init job and the __project__-service container read them, so
+      # the same pair is used for provisioning and for runtime S3 calls.
+      - ../apps/__project__-service/.env.prod
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_PRIVATE_BUCKET: ${MINIO_PRIVATE_BUCKET:?must be set in .env.prod}
+      MINIO_PUBLIC_BUCKET: ${MINIO_PUBLIC_BUCKET:?must be set in .env.prod}
+    networks: [backend]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/"$$MINIO_PRIVATE_BUCKET"
+        mc mb --ignore-existing local/"$$MINIO_PUBLIC_BUCKET"
+        mc anonymous set download local/"$$MINIO_PUBLIC_BUCKET"
+        mc anonymous set none     local/"$$MINIO_PRIVATE_BUCKET"
+
+        if [ -z "$$MINIO_ACCESS_KEY" ] || [ -z "$$MINIO_SECRET_KEY" ]; then
+          echo "minio-init: MINIO_ACCESS_KEY / MINIO_SECRET_KEY missing — skipping user provisioning"
+          exit 0
+        fi
+
+        # Least-privilege policy: Get/Put/Delete/List scoped to the two
+        # __project__ buckets only. No access to other buckets, no admin ops.
+        cat >/tmp/__project__-svc.json <<JSON
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Action": [
+              "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+              "s3:ListBucket", "s3:ListBucketMultipartUploads",
+              "s3:ListMultipartUploadParts", "s3:AbortMultipartUpload",
+              "s3:GetBucketLocation"
+            ],
+            "Resource": [
+              "arn:aws:s3:::$$MINIO_PRIVATE_BUCKET",
+              "arn:aws:s3:::$$MINIO_PRIVATE_BUCKET/*",
+              "arn:aws:s3:::$$MINIO_PUBLIC_BUCKET",
+              "arn:aws:s3:::$$MINIO_PUBLIC_BUCKET/*"
+            ]
+          }]
+        }
+        JSON
+        mc admin policy create local __project__-svc /tmp/__project__-svc.json || true
+        mc admin user add local "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY" || true
+        mc admin policy attach local __project__-svc --user "$$MINIO_ACCESS_KEY" || true
+
+        echo "minio-init: buckets ready; service user provisioned"
+
+  # ───── App ─────────────────────────────────────────────────────────────
+  # Migrations (one-shot). Runs `__project__-service migrate` which discovers
+  # paired `<ts>_<name>.{up,down}.sql` files under /app/migrations, applies
+  # each pending one in a transaction, and records it in
+  # `schema_migrations`. Exits 0 on success — __project__-service depends on
+  # this with `service_completed_successfully` and the binary itself
+  # enforces a `MIGRATIONS_STRICT` startup gate that refuses to serve
+  # traffic against an unmigrated schema.
+  migrations:
+    image: ghcr.io/faridlab/__project__-service:${SERVICE_TAG:?SERVICE_TAG must be pinned in .env.prod (e.g. v0.5.2 from CI). See .env.prod.example.}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.prod
+      - ../apps/__project__-service/.env.prod
+    environment:
+      APP_ENV: prod
+      # Config loader picks the overlay by RUST_ENV (not APP_ENV) — keep both
+      # in sync. Without RUST_ENV, application-prod.yml is silently skipped.
+      RUST_ENV: prod
+      # Same construction as __project__-service below — without this the
+      # migrate binary has no way to find the postgres container (would
+      # default to localhost inside its own container = no postgres).
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    networks: [backend]
+    command: ["migrate"]
+    restart: "no"
+
+  __project__-service:
+    image: ghcr.io/faridlab/__project__-service:${SERVICE_TAG:?SERVICE_TAG must be pinned in .env.prod (e.g. v0.5.2 from CI). See .env.prod.example.}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    env_file:
+      # Two-layer env (order matters — later file overrides on conflict):
+      #   1. .env.prod                              ← orchestration (this dir)
+      #   2. ../apps/__project__-service/.env.prod     ← service-owned runtime
+      # The service file lives WITH the service code, mirrored on the VPS
+      # at /srv/__project__/apps/__project__-service/.env.prod. See README.
+      - .env.prod
+      - ../apps/__project__-service/.env.prod
+      # OpenAPI/Swagger UI is absent from this image unless it was built with
+      # `--build-arg CARGO_FEATURES=openapi`. When it IS, set SWAGGER_UI_USER +
+      # SWAGGER_UI_PASSWORD in ../apps/__project__-service/.env.prod to gate
+      # /swagger-ui + /api-docs/* (they flow in via the env_file above).
+    environment:
+      APP_ENV: prod
+      # Config loader picks the overlay by RUST_ENV (not APP_ENV) — keep both
+      # in sync. Without RUST_ENV, application-prod.yml is silently skipped.
+      RUST_ENV: prod
+      HOST: 0.0.0.0
+      PORT: "3000"
+      METRICS_ENABLED: "true"
+      METRICS_PORT: "9090"
+      # Caddy terminates TLS and reverse-proxies to this container; trust
+      # the X-Forwarded-For / X-Real-IP headers it sets so audit logs and
+      # per-IP login throttle see the real client IP, not Caddy's.
+      TRUST_PROXY_HEADERS: "true"
+      # Belt-and-braces with the `migrations` one-shot above. Refuses to
+      # start if any migration is pending — see migrate service notes.
+      MIGRATIONS_STRICT: "true"
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: https://s3.${DOMAIN:?must be set in .env.prod (apex domain, e.g. __project__.com)}
+    networks: [edge, backend, observability]
+    healthcheck:
+      test: ["CMD", "/app/__project__-service", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ───── Frontends ──────────────────────────────────────────────────────
+  __project__-webapp-customer:
+    image: ghcr.io/faridlab/__project__-webapp-customer:${WEBAPP_CUSTOMER_TAG:?WEBAPP_CUSTOMER_TAG must be pinned in .env.prod (e.g. v0.3.1 from CI). See .env.prod.example.}
+    restart: unless-stopped
+    networks: [edge]
+
+  __project__-webapp-provider:
+    image: ghcr.io/faridlab/__project__-webapp-provider:${WEBAPP_PROVIDER_TAG:?WEBAPP_PROVIDER_TAG must be pinned in .env.prod (e.g. v0.3.1 from CI). See .env.prod.example.}
+    restart: unless-stopped
+    networks: [edge]
+
+  __project__-webapp-admin:
+    image: ghcr.io/faridlab/__project__-webapp-admin:${WEBAPP_ADMIN_TAG:?WEBAPP_ADMIN_TAG must be pinned in .env.prod (e.g. v0.3.1 from CI). See .env.prod.example.}
+    restart: unless-stopped
+    networks: [edge]
+
+  __project__-webapp-download:
+    image: ghcr.io/faridlab/__project__-webapp-download:${WEBAPP_DOWNLOAD_TAG:?WEBAPP_DOWNLOAD_TAG must be pinned in .env.prod (e.g. v0.3.1 from CI). See .env.prod.example.}
+    restart: unless-stopped
+    networks: [edge]
+
+  # ───── Edge ────────────────────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    depends_on:
+      - __project__-service
+      - minio
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?must be set in .env.prod (Let's Encrypt notification email)}
+      MINIO_PUBLIC_BUCKET: ${MINIO_PUBLIC_BUCKET}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+
+  # ───── Monitoring ─────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=5GB
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks: [observability]
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    networks: [observability]
+
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - ./promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [observability]
+    depends_on: [loki]
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    env_file: [.env.prod]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?must be set in .env.prod (Grafana login password)}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: https://grafana.${DOMAIN}
+      GF_SMTP_ENABLED: ${GRAFANA_SMTP_ENABLED:-false}
+      GF_SMTP_HOST: ${SMTP_HOST:-}
+      GF_SMTP_USER: ${SMTP_USER:-}
+      GF_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      GF_SMTP_FROM_ADDRESS: ${EMAIL_FROM:-}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    networks: [edge, observability]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    networks: [observability]
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    networks: [observability]
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    networks: [backend, observability]
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    restart: unless-stopped
+    volumes:
+      - uptimekuma_data:/app/data
+    networks: [edge]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  uptimekuma_data:
+
+networks:
+  edge:
+  backend:
+  observability:

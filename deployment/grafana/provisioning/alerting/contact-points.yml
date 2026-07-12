@@ -1,0 +1,27 @@
+# Alert delivery targets.
+#
+# Email is the default channel, using the SMTP config Grafana picks up
+# from compose env (GF_SMTP_*). Requires `GRAFANA_SMTP_ENABLED=true` in
+# `.env.prod` and valid SMTP_* values — otherwise emails silently drop.
+#
+# The `addresses:` field below is the delivery list. Grafana does NOT
+# reliably substitute ${ENV_VAR} inside provisioning values for alerting,
+# so the address is a literal. Update this file (and `docker compose
+# restart grafana`) to change the recipient list; operators can also add
+# recipients through the Grafana UI at /alerting/notifications.
+#
+# Add a Telegram / Slack receiver alongside `email-ops` when beta starts
+# delivering traffic that warrants 24/7 oncall visibility.
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: email-ops
+    receivers:
+      - uid: email-ops-primary
+        type: email
+        settings:
+          addresses: farid@startapp.id
+          singleEmail: false
+        disableResolveMessage: false
