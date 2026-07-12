@@ -153,7 +153,7 @@ Safety:
 - Never paste `deployment/.env.prod` contents anywhere.
 - Confirm `metaphor migration run-all` shows "no pending migrations" if you didn't expect any — that tells you nothing's about to silently alter the schema.
 
-When `MigrationManager` is replaced with a real in-process runner upstream, this whole step goes away and metaphor's built-in `migrate` step can be re-enabled (drop `--skip-migrate`). Until then: this is the truth.
+When `MigrationManager` is replaced with a real in-process runner upstream, this whole step goes away and metaphor's built-in `migrate` step can be re-enabled (drop `--skip-migrate`). At that point the tunnel dance above collapses into one command — `metaphor migration run-all --target prod` (equivalently `metaphor deploy migrate prod`) — which runs the env's `migrations` compose service over SSH and **gates on a typed env-name confirmation** so a stray keypress can't migrate prod. It does **not** work on today's distroless stack (the `sh -lc` wrapper needs a shell, and the in-container `migrate` is still a stub), which is why Step 5b remains the truth until the in-process runner lands.
 
 ### Step 6 — Verify prod is healthy
 
