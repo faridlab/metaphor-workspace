@@ -36,7 +36,7 @@ metaphor dev serve                           # run the current app
 | `metaphor.yaml` | The manifest — base framework modules (`backbone-framework`/`sapiens`/`bucket`) pinned by ref + one example `__project__-service` app. Add your modules/apps here. |
 | `metaphor.deploy.yaml` | Deployment topology (which apps deploy where). |
 | `CLAUDE.md` | Orients Claude Code to the consumer-workspace conventions. |
-| `deployment/` | A ready single-VPS Docker stack: `compose.yaml` + Caddy (TLS/reverse-proxy) + Grafana/Loki/Prometheus/Promtail (observability) + Postgres backups (restic). Customize the `__project__` service/DB names. |
+| `deployment/` | A ready single-VPS Docker stack: `compose.yaml` + Caddy (TLS/reverse-proxy) + Grafana/Loki/Prometheus/Promtail (observability) + Postgres backups (restic), plus `chaos/` (a dev-stack fault-injection kit — see `docs/chaos/README.md`). Customize the `__project__` service/DB names. |
 | `docs/` | Runbooks + playbooks — local dev, production deployment, release runbook, VPS setup, updating deployments; `chaos/` (the post-change resilience gate) and `agent/` (development playbook for Claude Code). |
 | `.gitignore` | Ignores `/modules` (synced, not committed), `.claude/` (installed via `metaphor agent install`), and deployment secrets. |
 

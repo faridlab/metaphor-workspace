@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# lib/steady-state.sh — PRODUCT steady-state hook (worked example).
+#
+# The chaos kit ships health-only steady state. To make the gate judge your
+# actual business flows, COPY this file to lib/steady-state.sh (same
+# directory), edit it to run YOUR probes, and never rename the two hook
+# functions. The file is sourced once at kit startup — it must only DEFINE
+# functions, no top-level side effects.
+#
+# Hook contract (both functions: exit 0 = pass, non-zero = fail):
+#
+#   flow_canary LABEL
+#       One real, self-contained business-flow probe (a guest journey, a
+#       checkout, whatever your product cannot live without). It runs:
+#         - foreground, as the baseline/recovery verdict leg (quick output
+#           is swallowed; tee to your own log file if you need detail)
+#         - background, while postgres/service-kill faults land midwrite —
+#           so it must be safe to run concurrently with itself and must
+#           clean up its own probe footprint.
+#       Keep it idempotent and reasonably fast (< a few minutes).
+#
+#   tenancy_sweep
+#       Tenancy-fence probes for the recovery leg of
+#       tenancy-fence-under-fault (--full). Assert the fence for EVERY
+#       tenant, not just the resident one, once the control plane is back.
+#
+# Without this hook installed, canary/sweep legs record as SKIP — the kit
+# still runs, just shallower.
+
+# ─── Example shape (adapt to your product) ────────────────────────────────
+# The proven shape: a committed probe script in the app repo does the real
+# work; the hook just runs it with the right env. Prefer that shape — the
+# chaos kit should never own product probe logic.
+
+# flow_canary() { # LABEL
+#     local label="$1"
+#     local runner="$WORKSPACE_ROOT/apps/__project__-service/scripts/run-guest-flow.sh"
+#     if [ ! -x "$runner" ]; then
+#         echo "flow_canary: runner missing: $runner" >&2
+#         return 1
+#     fi
+#     "$runner"
+# }
+#
+# tenancy_sweep() {
+#     local runner="$WORKSPACE_ROOT/apps/__project__-service/scripts/run-tenancy-sweep.sh"
+#     [ -x "$runner" ] || { echo "tenancy_sweep: runner missing: $runner" >&2; return 1; }
+#     "$runner"
+# }

@@ -2,7 +2,8 @@
 
 > This workspace treats chaos engineering as a **quality gate that runs after
 > business-flow-level changes**, the same way tests and review do. This doc is
-> the practice definition. Adapt it to this product's real dependencies —
+> the practice definition. The kit under `deployment/chaos/` is
+> parameterized; adapt the practice to this product's real dependencies —
 > delete what does not apply, add what exists here.
 
 ## 1. What this is (and is not)
@@ -74,25 +75,68 @@ Probing rules: target the stack by explicit `127.0.0.1` (never `localhost`,
 which may resolve to `::1` while the stack binds IPv4 only); treat a probe
 that *skips* as a failure, not a pass.
 
-## 5. Experiment catalog (starting set)
+**How the kit encodes this table:** liveness + readiness are the health-only
+steady state (always on). The canary-flow and tenancy rows come from the
+**product hook**: copy `deployment/chaos/lib/steady-state.sh.example` to
+`deployment/chaos/lib/steady-state.sh` and implement `flow_canary LABEL`
+(and `tenancy_sweep` if multi-tenant) as thin wrappers over this product's
+own committed probe scripts — the kit picks the hook up on the next run and
+adds those legs to baseline/recovery (`--full`). Until the hook is installed
+those legs record as **SKIP**: the gate still runs, just shallower. Keep
+probe logic in the app repo, not in the kit.
 
-One fault per experiment; each names fault, hypothesis, blast radius,
-injection, restore. A parameterized driver (`deployment/chaos/run.sh` +
-per-experiment scripts) ships in a later framework train — until then, run
-these as documented manual procedures or port the kit from the reference
-implementation (the serpa workspace pilot).
+## 5. The kit — `deployment/chaos/`
+
+The parameterized kit ships with this template (`metaphor init` stamps
+`__project__` into it like everywhere else). Bash + docker compose only,
+serial, safe to re-run.
+
+```bash
+deployment/chaos/run.sh list              # catalog, one per line
+deployment/chaos/run.sh --dry-run all     # print every action + check, touch nothing
+deployment/chaos/run.sh postgres-loss     # one experiment, live
+deployment/chaos/run.sh --full all        # + canary/tenancy legs (needs the hook; slow)
+```
+
+Layout:
+
+- `run.sh` — serial driver. Each experiment runs in its own subshell with an
+  abort trap that restores the stack on ANY exit; baseline must be green
+  before anything is injected; verdict + `chaos_exit=` line at the end.
+- `lib/common.sh` — compose wrappers (`deployment/.env.dev` optional), HTTP
+  and postgres probes, the check ledger, and the **stack wiring**
+  (`SERVICE_NAME`, `CONTROL_PLANE_SERVICE`, base URLs) — the single place to
+  rebind names if this workspace's compose differs.
+- `lib/steady-state.sh.example` — the product hook template (§4).
+- `experiments/<name>.sh` — one fault per file, each documenting fault,
+  hypothesis, blast radius, and restore.
+- `runlogs/` — committed evidence, one log per experiment per day.
+
+Catalog (run serially, in this order):
 
 | # | Experiment | Injection (dev compose) | Steady-state expectation |
 |---|---|---|---|
-| 1 | database-loss | `docker compose stop postgres` | typed 5xx/refusals, no hangs; pool reconnects and all probes green after start |
-| 2 | database-restart-midwrite | restart postgres while the canary flow writes | no lost/duplicated writes; consistent state after recovery |
-| 3 | object-storage-loss | `docker compose stop <storage>` | storage-dependent flows fail closed; others healthy; clean recovery |
-| 4 | dependency-service-loss | stop a composed supporting service | remaining flows keep serving; fences do NOT fail open |
-| 5 | service-kill-midflow | kill the app container mid canary flow | state consistent after restart; flow completes or fails cleanly |
+| 1 | postgres-loss | `stop postgres` | typed 5xx/refusals, no hangs; pool reconnects and all probes green after start |
+| 2 | postgres-restart-midwrite | restart postgres while the canary flow writes (--full) | no lost/duplicated writes; consistent state after recovery |
+| 3 | minio-loss | `stop minio` | storage-dependent flows fail closed; others healthy; clean recovery |
+| 4 | control-plane-loss | stop the control plane (if the compose runs one) | remaining flows keep serving; fences do NOT fail open |
+| 5 | service-kill-midflow | kill the service container mid canary flow (--full) | state consistent after restart; flow completes or fails cleanly |
 | 6 | pool-exhaustion | hold DB connections to `max_connections` | controlled errors, no pool leak; recovery after release |
-| 7 | secret-fail-closed | recreate a service with one required secret empty | boot fails loudly OR that surface refuses typed; never silent misbehavior |
-| 8 | maintenance-mode | enable the maintenance gate | clean refusal for traffic, truthful status, allow-listed paths stay up, clean clear |
-| 9 | tenancy-fence-under-fault (if multi-tenant) | pair #1/#4 with tenancy probes running | the fence is still enforced while a dependency is degraded |
+| 7 | secret-fail-closed | recreate the service with one optional secret emptied | boot fails loudly OR that surface refuses typed; never silent misbehavior |
+| 8 | maintenance-mode | arm + enable the maintenance gate | clean refusal for traffic, truthful status, allow-listed paths stay up, clean clear |
+| 9 | tenancy-fence-under-fault | #4 while the tenant-resolution surface is probed | the fence is still enforced while a dependency is degraded |
+
+Skips are honest, not failures: an experiment whose target service the
+compose does not declare (a control plane, by default) **skips**; so does
+`secret-fail-closed` until `CHAOS_SECRET_ENV_VAR` names an optional secret,
+and the canary/sweep legs until the steady-state hook exists.
+
+Knobs (env or defaults in `lib/common.sh`): `SERVICE_BASE_URL`
+(127.0.0.1:3000), `CONTROL_PLANE_BASE_URL` (127.0.0.1:3210),
+`CHAOS_SECRET_ENV_VAR`, `CHAOS_GATED_PATH` (default `/api/v1`),
+`CHAOS_TENANCY_API_PATH`, `CHAOS_RESIDENT_SLUG` (falls back to
+`TENANT_ZERO_SLUG` in `deployment/.env.dev`), `WAIT_HTTP_TIMEOUT` (180),
+`WAIT_SLOW_TIMEOUT` (420).
 
 Deferred until uat/prod tooling exists: network latency/partition, disk
 pressure, TLS-edge faults.
@@ -115,11 +159,11 @@ pressure, TLS-edge faults.
 
 ## 8. Roadmap
 
-1. **Manual/procedural** (this doc) — experiments run as documented steps.
-2. **Parameterized kit** — `deployment/chaos/` driver + experiment scripts
-   generated per workspace (ships in a framework train once the serpa pilot
-   validates the catalog).
-3. **Skill pack** — a `chaos-engineering` skill in the metaphor-agent pack;
+1. **Parameterized kit** (landed) — the template ships the driver, the
+   shared library, and the nine-experiment catalog; workspaces keep the kit
+   after `metaphor init` stamps it, and wire their steady state via the
+   `lib/steady-state.sh` hook.
+2. **Skill pack** — a `chaos-engineering` skill in the metaphor-agent pack;
    `metaphor chaos` CLI once the catalog is stable.
-4. **uat/prod game days** — only after observability and abort-safety are
+3. **uat/prod game days** — only after observability and abort-safety are
    proven, with explicit owner approval.

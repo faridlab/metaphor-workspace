@@ -1,0 +1,3 @@
+# Runtime-generated chaos overrides (secret-fail-closed writes its override
+# here per run, parameterized on CHAOS_SECRET_ENV_VAR).
+generated-*.yaml

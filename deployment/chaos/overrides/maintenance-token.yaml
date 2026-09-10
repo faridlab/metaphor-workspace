@@ -1,0 +1,12 @@
+# Transient chaos override — applied ONLY by
+# deployment/chaos/run.sh maintenance-mode, which recreates the service
+# WITHOUT this override in its restore phase. Never `up` the stack with this
+# file outside the chaos kit.
+#
+# Arms the maintenance admin toggle (closed by default: the handler answers
+# 501 while MAINTENANCE_ADMIN_TOKEN is unset/empty). The token value below
+# is a dev-only throwaway, deliberately not a secret.
+services:
+  __project__-service:
+    environment:
+      MAINTENANCE_ADMIN_TOKEN: chaos-dev-maintenance-token

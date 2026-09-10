@@ -32,7 +32,7 @@ metaphor dev serve               # run the current app
 metaphor.yaml / metaphor.lock   # projects[] + resolved SHAs (check in together)
 modules/                        # upstream clones — READ-ONLY (gitignored, rebuilt by sync)
 apps/                           # __project__-service · __project__-webapp-* · __project__-mobile-provider
-deployment/                     # compose.dev.yaml / compose.yaml, caddy/, observability, backups
+deployment/                     # compose.dev.yaml / compose.yaml, caddy/, observability, backups, chaos/ (fault kit)
 docs/                           # runbooks + agent/ (dev playbook) + chaos/ (resilience gate)
 metaphor.deploy.yaml            # envs (dev/uat/prod), services, image tags
 ```
