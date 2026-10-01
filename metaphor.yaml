@@ -1,6 +1,13 @@
 # Metaphor workspace manifest (TEMPLATE).
 # - `module` projects are pinned upstream deps: `remote:` + `ref:` → synced into modules/ by `metaphor sync`
 #   (modules/ is git-ignored — never vendored). Bump `ref:` to upgrade, then re-sync.
+# - Once the service compiles the modules from crates.io and has a Cargo.lock, let that lock be the only
+#   place a module version is written: set `version: 2`, add
+#       refs_from:
+#         cargo_lock: apps/__project__-service/Cargo.lock
+#   and drop the modules' `ref:` lines (name a module's package with `crate:` when it differs, e.g.
+#   `crate: backbone-core` for backbone-framework). `cargo update` then `metaphor sync` upgrades a module.
+#   Keep explicit refs until then: a fresh workspace syncs before the service exists.
 # - `backend-service`/`webapp`/`mobileapp` projects live under apps/ and consume modules via depends_on.
 # Rename the `__project__` placeholder to your product, and add your own modules/apps below.
 version: 1
