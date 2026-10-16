@@ -260,7 +260,7 @@ Alerts (Grafana → email or Telegram via the SMTP config already in `__project_
 
 - **Postgres 16** in container, data on named volume `pgdata`. No host port published — reachable only on the `backend` Docker network.
 - **Valkey** (Redis-protocol compatible; service `redis`) for cache, sessions and queues, `redisdata` volume, also private.
-- **RustFS** (S3-compatible object storage, service `minio`) for `backbone-bucket`. Single-node mode is fine for beta; volume `miniodata`. **Two buckets** auto-created on boot via a small `minio-init` container running `mc`: `__project__-public` (anonymous-read policy, fronted by `bucket.__project__.com/public/*`) and `__project__-private` (default-deny, accessed only via presigned URLs from mode B). Console port `:9001` stays bound to localhost only.
+- **RustFS** (S3-compatible object storage, service `minio`) for `backbone-bucket`. Single-node mode is fine for beta; volume `miniodata`. **Two buckets** auto-created on boot by the one-shot `minio-init` job, which runs `__project__-service storage-init` from the service image (like `migrations`) and also creates the least-privilege service user: `__project__-public` (anonymous-read policy, fronted by `bucket.__project__.com/public/*`) and `__project__-private` (default-deny, accessed only via presigned URLs from mode B). Console port `:9001` stays bound to localhost only.
 - **Secrets:** `.env.prod` on the VPS only, `chmod 600`, owned by the deploy user. Loaded by `compose.yaml` via `env_file:`. `.env.prod.example` committed for shape; real file **never** committed.
 - **Backups:**
   - Nightly cron: `pg_dump` → `/var/backups/pg/` (7-day retention).

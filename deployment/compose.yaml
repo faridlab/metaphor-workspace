@@ -103,83 +103,37 @@ services:
       # Console bound to localhost only — SSH-tunnel to reach it.
       - "127.0.0.1:9001:9001"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health/ready"]
       interval: 15s
       timeout: 5s
       retries: 10
 
-  # One-shot bucket/policy bootstrap. Runs once per `up`, exits 0.
-  #
-  # Provisions:
-  #   - the two buckets (private + public) with anonymous policies
-  #   - a least-privilege service user (MINIO_ACCESS_KEY/MINIO_SECRET_KEY
-  #     from apps/__project__-service/.env.prod) scoped to those buckets via
-  #     the `__project__-svc` policy
-  #
-  # Idempotent: `mc admin policy create` / `user add` errors on re-run are
-  # swallowed with `|| true`. To rotate the service key, delete the user
-  # manually (`mc admin user remove`) then bring the stack up again — bare
-  # `add` does not update an existing user's secret.
+  # One-shot object-storage bootstrap: `__project__-service storage-init`
+  # (backbone_bucket::provision), the same image and pattern as `migrations`.
+  # Runs once per `up` and exits 0. It creates the private and public buckets,
+  # gives the public one anonymous read, and creates the least-privilege
+  # service user (MINIO_ACCESS_KEY / MINIO_SECRET_KEY from
+  # apps/__project__-service/.env.prod) with the `__project__-svc` policy on
+  # those two buckets only. Idempotent; a changed MINIO_SECRET_KEY rotates
+  # the user's key on the next run. The root keys live in this job only,
+  # never in the service.
   minio-init:
-    # `mc` built from its last source release (deployment/images/mc in the
-    # workspace template); MinIO no longer publishes pullable `mc` images.
-    image: ghcr.io/faridlab/mc:RELEASE.2025-08-13T08-35-41Z@sha256:7c9742963e0a3428704637ac48b130bb5af472dd60663e9ad2cf57fbc0dc74e2
+    image: ghcr.io/faridlab/__project__-service:${SERVICE_TAG:?SERVICE_TAG must be pinned in .env.prod (e.g. v0.5.2 from CI). See .env.prod.example.}
     depends_on:
       minio:
         condition: service_healthy
     env_file:
-      # Service-owned creds (MINIO_ACCESS_KEY / MINIO_SECRET_KEY) live here.
-      # Both this init job and the __project__-service container read them, so
-      # the same pair is used for provisioning and for runtime S3 calls.
       - ../apps/__project__-service/.env.prod
     environment:
+      MINIO_ENDPOINT: http://minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_PRIVATE_BUCKET: ${MINIO_PRIVATE_BUCKET:?must be set in .env.prod}
       MINIO_PUBLIC_BUCKET: ${MINIO_PUBLIC_BUCKET:?must be set in .env.prod}
+      MINIO_SERVICE_POLICY: __project__-svc
     networks: [backend]
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
-        mc mb --ignore-existing local/"$$MINIO_PRIVATE_BUCKET"
-        mc mb --ignore-existing local/"$$MINIO_PUBLIC_BUCKET"
-        mc anonymous set download local/"$$MINIO_PUBLIC_BUCKET"
-        mc anonymous set none     local/"$$MINIO_PRIVATE_BUCKET"
-
-        if [ -z "$$MINIO_ACCESS_KEY" ] || [ -z "$$MINIO_SECRET_KEY" ]; then
-          echo "minio-init: MINIO_ACCESS_KEY / MINIO_SECRET_KEY missing — skipping user provisioning"
-          exit 0
-        fi
-
-        # Least-privilege policy: Get/Put/Delete/List scoped to the two
-        # __project__ buckets only. No access to other buckets, no admin ops.
-        cat >/tmp/__project__-svc.json <<JSON
-        {
-          "Version": "2012-10-17",
-          "Statement": [{
-            "Effect": "Allow",
-            "Action": [
-              "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
-              "s3:ListBucket", "s3:ListBucketMultipartUploads",
-              "s3:ListMultipartUploadParts", "s3:AbortMultipartUpload",
-              "s3:GetBucketLocation"
-            ],
-            "Resource": [
-              "arn:aws:s3:::$$MINIO_PRIVATE_BUCKET",
-              "arn:aws:s3:::$$MINIO_PRIVATE_BUCKET/*",
-              "arn:aws:s3:::$$MINIO_PUBLIC_BUCKET",
-              "arn:aws:s3:::$$MINIO_PUBLIC_BUCKET/*"
-            ]
-          }]
-        }
-        JSON
-        mc admin policy create local __project__-svc /tmp/__project__-svc.json || true
-        mc admin user add local "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY" || true
-        mc admin policy attach local __project__-svc --user "$$MINIO_ACCESS_KEY" || true
-
-        echo "minio-init: buckets ready; service user provisioned"
+    command: ["storage-init"]
+    restart: "no"
 
   # ───── App ─────────────────────────────────────────────────────────────
   # Migrations (one-shot). Runs `__project__-service migrate` which discovers

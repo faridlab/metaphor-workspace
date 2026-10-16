@@ -100,7 +100,8 @@ Don't run both host and container Vite for the same app — they fight over `:51
 Use `--service <name>` (repeatable) to start a subset. Useful when you don't want to pay the full build cost or you're iterating in a different layer. `--service` also bypasses profile gates, so it's the way to run the (otherwise-disabled) frontend containers ad-hoc.
 
 ```bash
-# Data stores only — useful when running an app outside Docker
+# Data stores only — useful when running an app outside Docker. minio-init runs
+# `storage-init` from the service's dev build, so its first run compiles the service.
 metaphor docker up --env dev \
   --service postgres --service redis --service minio --service minio-init
 
