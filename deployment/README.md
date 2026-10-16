@@ -4,6 +4,8 @@ Matches the plan in [../docs/DEPLOYMENT-PLAN.md](../docs/DEPLOYMENT-PLAN.md). Re
 
 > **Looking for local dev?** This runbook is for the prod/uat VPS stack ([compose.yaml](compose.yaml)). Local development uses [compose.dev.yaml](compose.dev.yaml) — see [../docs/LOCAL-DEVELOPMENT.md](../docs/LOCAL-DEVELOPMENT.md).
 
+> **"MinIO" and "redis" are role names.** The `minio` service runs **RustFS** (Apache-2.0, S3- and `mc admin`-compatible) and the `redis` service runs **Valkey** (BSD-3, Redis-protocol compatible). The service names, the `MINIO_*` / `REDIS_URL` env contract, Caddy routes, backups and chaos experiments are unchanged. MinIO Community no longer publishes images or security fixes, and Redis 7.4+ is not open source. A stack that already holds MinIO data should copy its buckets across with `mc mirror` before switching images, rather than pointing RustFS at the old volume.
+
 ## Layout on the VPS
 
 The VPS mirrors the workspace's `deployment/` and `apps/` layout side-by-side

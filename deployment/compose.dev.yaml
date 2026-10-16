@@ -38,27 +38,35 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    # Valkey: the BSD-3 Linux Foundation fork of Redis 7.2, wire-compatible with
+    # Redis clients (REDIS_URL and the `redis` crate keep working). Redis 7.4+
+    # images are RSALv2/SSPL, which is not an open source license.
+    image: valkey/valkey:8.1-alpine
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
       - redisdata:/data
     networks: [backend]
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 10
 
   minio:
-    image: quay.io/minio/minio:latest
+    # Object storage. The service keeps the name `minio` as a role name so
+    # Caddy, backups, chaos experiments and the MINIO_* env contract stay
+    # unchanged; the server is RustFS (Apache-2.0, S3- and `mc admin`-
+    # compatible). MinIO Community stopped publishing images in Oct 2025 and
+    # its repository is archived, so it no longer receives security fixes.
+    image: rustfs/rustfs:1.0.1
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    command: ["server", "--console-enable", "/data"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      RUSTFS_ACCESS_KEY: ${MINIO_ROOT_USER}
+      RUSTFS_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
     volumes:
       - miniodata:/data
     networks: [backend]
@@ -66,7 +74,7 @@ services:
       - "127.0.0.1:9000:9000"   # S3 API — __project__-service + browser hit this
       - "127.0.0.1:9001:9001"   # Console
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
       interval: 15s
       timeout: 5s
       retries: 10
