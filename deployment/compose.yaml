@@ -72,7 +72,7 @@ services:
     # Valkey: the BSD-3 Linux Foundation fork of Redis 7.2, wire-compatible with
     # Redis clients (REDIS_URL and the `redis` crate keep working). Redis 7.4+
     # images are RSALv2/SSPL, which is not an open source license.
-    image: valkey/valkey:8.1-alpine
+    image: valkey/valkey:9.0.6-alpine
     restart: unless-stopped
     command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
@@ -90,7 +90,7 @@ services:
     # unchanged; the server is RustFS (Apache-2.0, S3- and `mc admin`-
     # compatible). MinIO Community stopped publishing images in Oct 2025 and
     # its repository is archived, so it no longer receives security fixes.
-    image: rustfs/rustfs:1.0.1
+    image: rustfs/rustfs:1.0.2
     restart: unless-stopped
     command: ["server", "--console-enable", "/data"]
     environment:
@@ -121,7 +121,9 @@ services:
   # manually (`mc admin user remove`) then bring the stack up again — bare
   # `add` does not update an existing user's secret.
   minio-init:
-    image: quay.io/minio/mc:latest
+    # `mc` built from its last source release (deployment/images/mc in the
+    # workspace template); MinIO no longer publishes pullable `mc` images.
+    image: ghcr.io/faridlab/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       minio:
         condition: service_healthy
