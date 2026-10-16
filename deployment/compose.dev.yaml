@@ -178,7 +178,7 @@ services:
   # doesn't drag host-architecture binaries into the container.
   __project__-webapp-customer:
     profiles: [frontends]
-    image: node:20-alpine
+    image: node:24.22.0-alpine
     working_dir: /app
     environment:
       VITE_API_BASE_URL: http://localhost:3000
@@ -199,7 +199,7 @@ services:
 
   __project__-webapp-provider:
     profiles: [frontends]
-    image: node:20-alpine
+    image: node:24.22.0-alpine
     working_dir: /app
     environment:
       VITE_API_BASE_URL: http://localhost:3000
@@ -222,7 +222,7 @@ services:
 
   __project__-webapp-admin:
     profiles: [frontends]
-    image: node:20-alpine
+    image: node:24.22.0-alpine
     working_dir: /app
     environment:
       VITE_API_BASE_URL: http://localhost:3000
@@ -243,7 +243,7 @@ services:
 
   __project__-webapp-download:
     profiles: [frontends]
-    image: node:20-alpine
+    image: node:24.22.0-alpine
     working_dir: /app
     environment:
       VITE_API_BASE_URL: http://localhost:3000

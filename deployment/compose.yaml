@@ -360,7 +360,8 @@ services:
     networks: [edge, observability]
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
+    # Releases from v0.53.0 on are published to ghcr.io only.
+    image: ghcr.io/google/cadvisor:v0.60.6
     restart: unless-stopped
     privileged: true
     volumes:
