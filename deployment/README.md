@@ -20,7 +20,7 @@ both contexts.
 │   ├── caddy/Caddyfile
 │   ├── prometheus/prometheus.yml
 │   ├── loki/loki-config.yaml
-│   ├── promtail/promtail-config.yaml
+│   ├── alloy/config.alloy
 │   ├── grafana/provisioning/
 │   └── backups/
 │       ├── pg-backup.sh

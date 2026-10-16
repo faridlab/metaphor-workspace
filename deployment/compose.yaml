@@ -327,13 +327,16 @@ services:
       - loki_data:/loki
     networks: [observability]
 
-  promtail:
-    image: grafana/promtail:latest
+  # Ships every container's stdout/stderr to Loki. Grafana Alloy replaces
+  # Promtail, which reached end of life on 2026-03-02; the labels (container,
+  # service, stream) are the same, so Loki queries and alerts are unchanged.
+  alloy:
+    image: grafana/alloy:v1.20.1
     restart: unless-stopped
-    command: -config.file=/etc/promtail/promtail-config.yaml
+    command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
     volumes:
-      - ./promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [observability]
     depends_on: [loki]
@@ -404,6 +407,7 @@ volumes:
   caddy_config:
   prometheus_data:
   loki_data:
+  alloy_data:
   grafana_data:
   uptimekuma_data:
 
