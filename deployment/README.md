@@ -256,6 +256,23 @@ gunzip -c "$latest" \
 # Sanity-check a row count, then drop __project___restore.
 ```
 
+Object storage (the RustFS volume `restic-push.sh` backs up) restores into a fresh volume, with
+the server stopped:
+```bash
+docker compose stop minio
+docker volume create __project___miniodata_restore
+sudo restic restore latest --target /tmp/restore \
+  --include /var/lib/docker/volumes/__project___miniodata/_data
+sudo cp -a /tmp/restore/var/lib/docker/volumes/__project___miniodata/_data/. \
+  /var/lib/docker/volumes/__project___miniodata_restore/_data/
+# Point the `minio` service's volume at __project___miniodata_restore (or swap the
+# volumes), start it, then read a known object as the service user. The users,
+# policies and bucket policies are restored with the data; re-running
+# `minio-init` reports everything already in place.
+```
+`restic` needs write access to the repository even to restore (it takes a lock). Against a
+read-only mount it waits for the lock without printing anything; use `--no-lock` there.
+
 ## Troubleshooting
 
 - **`curl https://api.${DOMAIN}` returns TLS error** — DNS probably hasn't propagated; check `dig api.${DOMAIN}`. Caddy logs: `docker compose logs caddy`.
