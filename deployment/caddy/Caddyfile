@@ -11,7 +11,7 @@
 #   admin     admin panel             __project__-webapp-admin:80
 #   download  provider-app download   __project__-webapp-download:80
 #   bucket    file serving            mode A → minio, mode B → service
-#   s3        raw MinIO               minio:9000
+#   s3        raw object storage      minio:9000 (RustFS)
 #   invoice   public receipt page     __project__-service:3000 (rewritten to /invoice/<provider>/<outlet>/<code>)
 #   grafana   dashboards              grafana:3000
 #   status    uptime-kuma             uptime-kuma:3001
@@ -68,7 +68,7 @@ download.{$DOMAIN} {
 bucket.{$DOMAIN} {
     encode zstd gzip
 
-    # Mode A: /public/* → MinIO public bucket, no service hop. The bucket
+    # Mode A: /public/* → object-storage public bucket, no service hop. The bucket
     # name is sourced from the MINIO_PUBLIC_BUCKET env var (passed to the
     # caddy container in compose.yaml) so renaming propagates from
     # .env.prod without editing this file.
@@ -84,7 +84,7 @@ bucket.{$DOMAIN} {
     }
 }
 
-# ─── Raw MinIO (mode C: presigned URLs) ───────────────────────────────
+# ─── Raw object storage (mode C: presigned URLs) ───────────────────────────────
 s3.{$DOMAIN} {
     reverse_proxy minio:9000
 }

@@ -285,7 +285,7 @@ metaphor deploy push prod         # ⚠️ this will ALSO rebuild __project__-se
 
 The __PROJECT__ env model has **two files** per environment:
 - `deployment/.env.prod` — orchestration (image tags, infra creds, edge config)
-- `apps/__project__-service/.env.prod` — service runtime config (JWT, MinIO access, log level, etc.)
+- `apps/__project__-service/.env.prod` — service runtime config (JWT, object-storage access, log level, etc.)
 
 Both are gitignored. The contracts (`.env.prod.example`) are committed.
 
@@ -325,7 +325,7 @@ $EDITOR deployment/.env.prod
 Fill in:
 - `DOMAIN`, `ACME_EMAIL`
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` (use a strong random password)
-- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` (admin creds for the MinIO container)
+- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` (admin creds for the object-storage container, RustFS)
 - `MINIO_PRIVATE_BUCKET`, `MINIO_PUBLIC_BUCKET`
 - `GRAFANA_ADMIN_PASSWORD`
 - `SMTP_*` (your email provider's creds)
@@ -475,14 +475,14 @@ echo | openssl s_client -servername api.__project__.com -connect api.__project__
 # If it says "STAGING" or "Pebble", Caddy is in test mode — see troubleshooting
 ```
 
-### 7d — File serving (MinIO modes)
+### 7d — File serving (object-storage modes)
 
 ```bash
-# Mode A — public bucket, direct from MinIO (after you've uploaded a test asset)
+# Mode A — public bucket, direct from object storage (after you've uploaded a test asset)
 curl -I https://bucket.__project__.com/public/<some-key>
 
-# Mode C — raw MinIO presigned URL endpoint (sanity check it's reachable)
-curl -I https://s3.__project__.com/                # 403 from MinIO is expected (no auth)
+# Mode C — raw object-storage presigned URL endpoint (sanity check it's reachable)
+curl -I https://s3.__project__.com/                # 403 from object storage is expected (no auth)
 ```
 
 ### 7e — Grafana

@@ -13,7 +13,7 @@
 - **Goal:** ship a beta of `__project__-mobile-provider` next week. The mobile app talks to a Rust backend (`__project__-service`) plus three React/TS webapps (customer `__project__-webapp-customer`, provider `__project__-webapp-provider`, admin `__project__-webapp-admin`).
 - **Constraint:** one VPS, Docker only, **no source code on the box** — only built images + binaries + config. Each service reachable via its own subdomain.
 - **Workspace shape today:**
-  - [apps/__project__-service](../apps/__project__-service) — Axum + sqlx + Redis. Prometheus `/metrics` on `:9090`, REST `:3000`, gRPC `:50051`. Migrations driven by `backbone_orm::migrations`. SMTP + OTLP already wired in config.
+  - [apps/__project__-service](../apps/__project__-service) — Axum + sqlx + Redis-protocol cache (Valkey). Prometheus `/metrics` on `:9090`, REST `:3000`, gRPC `:50051`. Migrations driven by `backbone_orm::migrations`. SMTP + OTLP already wired in config.
   - [apps/__project__-webapp-provider](../apps/__project__-webapp-provider) — empty; to be scaffolded (Vite + React + TS).
   - `apps/__project__-webapp-admin` — does not exist yet; to be scaffolded alongside.
   - [apps/__project__-mobile-provider](../apps/__project__-mobile-provider) — KMP; **not deployed to VPS**, only needs a stable HTTPS API base URL.
@@ -43,7 +43,7 @@
                               │
                               │  docker network: observability (private)
                               ▼
-        prometheus · grafana · loki · promtail · cadvisor · node-exporter · uptime-kuma
+        prometheus · grafana · loki · alloy · cadvisor · node-exporter · uptime-kuma
 ```
 
 ### Subdomain map
@@ -55,7 +55,7 @@
 | `app.__project__.com` | `__project__-webapp-customer:80` | Customer-facing webapp (nginx static) |
 | `provider.__project__.com` | `__project__-webapp-provider:80` | Provider-facing webapp (nginx static) |
 | `admin.__project__.com` | `__project__-webapp-admin:80` | Admin panel (nginx static, separate build) |
-| `download.__project__.com` | `__project__-webapp-download:80` | Public download page for the provider mobile app (used while not on Play Store / App Store). Binaries hosted externally (GitHub Releases or MinIO public bucket), NOT baked into this image. |
+| `download.__project__.com` | `__project__-webapp-download:80` | Public download page for the provider mobile app (used while not on Play Store / App Store). Binaries hosted externally (GitHub Releases or the object-storage public bucket), NOT baked into this image. |
 | `bucket.__project__.com` | `__project__-service:3000` | **Default** file serving (auth-aware handler — option B). See [File serving](#file-serving-backbone-bucket-three-modes). |
 | `s3.__project__.com` | `minio:9000` | Raw presigned-URL serving (option C) + public fast-path for option A |
 | `invoice.__project__.com` | `__project__-service:3000` | Public, unauthenticated receipt page. Caddy rewrites `/{invoiceId}` → service `/invoice/{invoiceId}`. URL is shared with customers via WhatsApp / SMS so they can view their receipt in a browser. |
@@ -100,8 +100,8 @@ deployment/
 │   └── prometheus.yml            # scrape __project__-service:9090, cadvisor, node-exporter
 ├── loki/
 │   └── loki-config.yaml          # filesystem chunks, 14-day retention
-├── promtail/
-│   └── promtail-config.yaml      # tail docker container logs
+├── alloy/
+│   └── config.alloy              # tail docker container logs → Loki
 ├── grafana/
 │   └── provisioning/             # datasources (prom + loki) + 3 starter dashboards
 ├── backups/
@@ -134,7 +134,7 @@ If the setup later grows to multi-node or needs dynamic config-from-labels, revi
 
 ## File serving (backbone-bucket): three modes
 
-`backbone-bucket` is a metadata store + signed-URL generator + **mode-B Axum router** as of v0.1.0 (`69d48de`). It does not serve file bytes itself — bytes come from MinIO either directly (modes A/C) or via a service-issued redirect (mode B). The deployment supports all three modes, with **option B as the default** so most callers get pretty URLs + auth without thinking about it.
+`backbone-bucket` is a metadata store + signed-URL generator + **mode-B Axum router** as of v0.1.0 (`69d48de`). It does not serve file bytes itself — bytes come from object storage (RustFS, service `minio`) either directly (modes A/C) or via a service-issued redirect (mode B). The deployment supports all three modes, with **option B as the default** so most callers get pretty URLs + auth without thinking about it.
 
 ### Mode B — Auth-aware handler (default, `bucket.__project__.com/<key>`)
 
@@ -143,7 +143,7 @@ If the setup later grows to multi-node or needs dynamic config-from-labels, revi
 1. `AuthExtractor` (consumer-supplied `FromRequestParts`) resolves the caller identity from the JWT/cookie.
 2. Handler looks up the `StoredFile` by `storage_key` (backed by the new unique index from migration `018_add_stored_files_storage_key_index`).
 3. `AuthzPolicy<Identity>::decide(&identity, &file)` — consumer-supplied; starts from `DefaultOwnerOnlyPolicy` and extends to cover `public/`, `FileShare` tokens, etc.
-4. **302 redirect** to a SigV4-signed MinIO URL via `ObjectStorage::presigned_get` (default response strategy — `ServingMode::Redirect`). Alternative strategies (`Stream`, `SignedUrl`) ship in the same handler if a caller needs them.
+4. **302 redirect** to a SigV4-signed object-storage URL via `ObjectStorage::presigned_get` (default response strategy — `ServingMode::Redirect`). Alternative strategies (`Stream`, `SignedUrl`) ship in the same handler if a caller needs them.
 
 The service stays out of the bandwidth path — only the auth check + redirect runs through Rust. The presigned URL's `X-Amz-Expires` lets the browser cache the object for the TTL window.
 
@@ -157,24 +157,24 @@ GET https://bucket.__project__.com/product/image/foo.jpg
 
 ### Mode A — Public fast-path (`bucket.__project__.com/public/*`)
 
-For hot, world-readable assets (product photos, marketing images, thumbnails) where the auth check + redirect is wasted work. Caddy carves out a path prefix and proxies straight to a **public** MinIO bucket:
+For hot, world-readable assets (product photos, marketing images, thumbnails) where the auth check + redirect is wasted work. Caddy carves out a path prefix and proxies straight to a **public** object-storage bucket:
 
 ```
 GET https://bucket.__project__.com/public/product/image/foo.jpg
-  → Caddy → MinIO public bucket (no service hop)
+  → Caddy → object-storage public bucket (no service hop)
 ```
 
-Selection rule baked into upload code: anything written under the `public/` prefix lands in the public MinIO bucket; everything else lands in private buckets and goes through mode B.
+Selection rule baked into upload code: anything written under the `public/` prefix lands in the public bucket; everything else lands in private buckets and goes through mode B.
 
 **Caveat:** anything in the public bucket is world-readable to anyone who guesses the URL. **Never put PII or user uploads there.** Convention enforced in the upload service, not at the storage layer.
 
 ### Mode C — Raw presigned URL (`s3.__project__.com/...`)
 
-The low-level escape hatch — clients/back-end code that already hold a presigned URL hit MinIO directly. This is what the `CdnService` in `backbone-bucket` emits today; mode B's redirect lands here. Also used by direct-upload flows (browser → MinIO with a presigned PUT, bypassing the service for upload bandwidth).
+The low-level escape hatch — clients/back-end code that already hold a presigned URL hit object storage directly. This is what the `CdnService` in `backbone-bucket` emits today; mode B's redirect lands here. Also used by direct-upload flows (browser → object storage with a presigned PUT, bypassing the service for upload bandwidth).
 
 ### Caddyfile sketch
 
-The upstream example mounts the serving router at `/cdn` (`.nest("/cdn", serving)`). To keep pretty URLs at the root of `bucket.__project__.com/<key>` while still respecting that mount point, Caddy rewrites the request path before proxying to the service. Mode A's `/public/*` carve-out goes straight to MinIO with no service hop.
+The upstream example mounts the serving router at `/cdn` (`.nest("/cdn", serving)`). To keep pretty URLs at the root of `bucket.__project__.com/<key>` while still respecting that mount point, Caddy rewrites the request path before proxying to the service. Mode A's `/public/*` carve-out goes straight to object storage with no service hop.
 
 ```caddy
 bucket.__project__.com {
@@ -215,13 +215,13 @@ bucket:
   storage:
     kind: s3                              # StorageConfig::S3(...)
     endpoint: http://minio:9000           # S3Config.endpoint
-    region: us-east-1                     # S3Config.region (any value; MinIO ignores it)
+    region: us-east-1                     # S3Config.region (any value; RustFS ignores it)
     access_key_env: MINIO_ACCESS_KEY      # name of env var holding the key
     secret_key_env: MINIO_SECRET_KEY
     private_bucket: __project__-private
     public_bucket: __project__-public        # omit to disable mode A
     public_endpoint: https://s3.__project__.com
-    force_path_style: true                # required for MinIO
+    force_path_style: true                # required for RustFS / MinIO-style S3 endpoints
   serving:
     default_mode: redirect                # ServingMode — redirect | stream | signed_url
     public_prefix: public/                # mode A carve-out; also routes uploads to public_bucket
@@ -244,7 +244,7 @@ Pre-wired because `__project__-service` already exposes Prometheus metrics on `:
 |---|---|---|
 | **Prometheus** | Scrape metrics | Service already ships `/metrics`; de-facto standard. |
 | **Grafana** | Dashboards + alerts | Standard pair with Prometheus + Loki. |
-| **Loki + Promtail** | Container log aggregation | Lighter than ELK; tails Docker logs by label. |
+| **Loki + Grafana Alloy** | Container log aggregation | Lighter than ELK; Alloy tails Docker logs and labels them (`container`, `service`, `stream`). Replaces Promtail, which is end of life. |
 | **cAdvisor** | Per-container CPU/mem/IO | Plug-and-play. |
 | **Node Exporter** | Host metrics (disk, load, net) | Standard for VPS health. |
 | **Uptime Kuma** | External uptime + public status page | Cheap insurance; nice status page for beta users. |
@@ -259,12 +259,12 @@ Alerts (Grafana → email or Telegram via the SMTP config already in `__project_
 ## Data, secrets, backups
 
 - **Postgres 16** in container, data on named volume `pgdata`. No host port published — reachable only on the `backend` Docker network.
-- **Redis 7** in container, `redisdata` volume, also private.
-- **MinIO** (S3-compatible) for `backbone-bucket`. Single-node mode is fine for beta; volume `miniodata`. **Two buckets** auto-created on boot via a small `mc` init container: `__project__-public` (anonymous-read policy, fronted by `bucket.__project__.com/public/*`) and `__project__-private` (default-deny, accessed only via presigned URLs from mode B). Console port `:9001` stays bound to localhost only.
+- **Valkey** (Redis-protocol compatible; service `redis`) for cache, sessions and queues, `redisdata` volume, also private.
+- **RustFS** (S3-compatible object storage, service `minio`) for `backbone-bucket`. Single-node mode is fine for beta; volume `miniodata`. **Two buckets** auto-created on boot via a small `minio-init` container running `mc`: `__project__-public` (anonymous-read policy, fronted by `bucket.__project__.com/public/*`) and `__project__-private` (default-deny, accessed only via presigned URLs from mode B). Console port `:9001` stays bound to localhost only.
 - **Secrets:** `.env.prod` on the VPS only, `chmod 600`, owned by the deploy user. Loaded by `compose.yaml` via `env_file:`. `.env.prod.example` committed for shape; real file **never** committed.
 - **Backups:**
   - Nightly cron: `pg_dump` → `/var/backups/pg/` (7-day retention).
-  - Weekly: `restic` push of `/var/backups` and the MinIO bucket to off-site (e.g. Backblaze B2).
+  - Weekly: `restic` push of `/var/backups` and the object-storage buckets to off-site (e.g. Backblaze B2).
   - Restore drill documented in `deployment/README.md` — **actually run it once before beta**.
 
 ---
@@ -274,7 +274,7 @@ Alerts (Grafana → email or Telegram via the SMTP config already in `__project_
 Compose `depends_on` + healthchecks:
 
 1. `postgres` healthy (`pg_isready`)
-2. `redis` healthy (`redis-cli ping`)
+2. `redis` healthy (`valkey-cli ping`)
 3. `migrations` runs once, exits 0 (one-shot service)
 4. `__project__-service` starts, waits for `/health` ready
 5. `caddy` starts last, begins routing
@@ -296,8 +296,8 @@ The day-to-day deploy commands live in [DEPLOY-COMMANDS.md](DEPLOY-COMMANDS.md) 
 - [ ] `https://app.__project__.com` (customer) loads, hits API, shows data
 - [ ] `https://provider.__project__.com` (provider) loads, hits API, shows data
 - [ ] `https://admin.__project__.com` loads, admin login works, CRUD round-trip succeeds
-- [ ] **Mode B (default):** `https://bucket.__project__.com/<private-key>` returns the file (302 → MinIO presigned) when authed; returns 401/403 when not
-- [ ] **Mode A (public):** `https://bucket.__project__.com/public/product/image/<key>` serves a known seeded asset directly from MinIO with no service hop (verify via `docker compose logs __project__-service` — no entry)
+- [ ] **Mode B (default):** `https://bucket.__project__.com/<private-key>` returns the file (302 → presigned object-storage URL) when authed; returns 401/403 when not
+- [ ] **Mode A (public):** `https://bucket.__project__.com/public/product/image/<key>` serves a known seeded asset directly from object storage with no service hop (verify via `docker compose logs __project__-service` — no entry)
 - [ ] **Mode C (raw):** a manually-generated presigned URL on `s3.__project__.com` downloads; the same URL after expiry returns 403
 - [ ] Public-bucket guard: confirm no PII / private content has accidentally been uploaded under the `public/` prefix (grep upload sites for `public/` literal usage)
 - [ ] `https://grafana.__project__.com` shows non-zero metrics on the Golden Signals dashboard
@@ -326,16 +326,16 @@ Adding a load balancer in front of multiple service replicas is **out of scope f
 
 | Concern | Beta state | What changes when you scale out |
 |---|---|---|
-| **App tier statelessness** | `__project__-service` keeps sessions in Redis, files in MinIO/S3, no local disk state. | Already LB-friendly. Add replicas behind a load balancer (cloud LB, or Caddy with multiple `reverse_proxy` upstreams). |
+| **App tier statelessness** | `__project__-service` keeps sessions in Redis, files in object storage (S3), no local disk state. | Already LB-friendly. Add replicas behind a load balancer (cloud LB, or Caddy with multiple `reverse_proxy` upstreams). |
 | **Postgres** | Single container on the VPS. | Move to managed Postgres (RDS / Neon / Supabase) **before** adding app replicas — a single-node DB is the real bottleneck, not the app. |
-| **Redis** | Single container on the VPS. | Move to managed Redis or a small Redis cluster. App code already talks to it via URL — only `REDIS_URL` changes. |
-| **Object storage** | Single-node MinIO. | Switch to distributed MinIO (4+ nodes) or external S3 (R2 / B2 / AWS). `backbone-bucket` is S3-compatible — endpoint swap. |
+| **Redis** | Single container on the VPS. | Move to a managed Redis-compatible service or a small Valkey cluster. App code already talks to it via URL — only `REDIS_URL` changes. |
+| **Object storage** | Single-node RustFS. | Switch to a distributed S3-compatible cluster or external S3 (R2 / B2 / AWS). `backbone-bucket` is S3-compatible — endpoint swap. |
 | **TLS termination** | Caddy on the VPS, certs on local volume. | Either (a) terminate TLS at the cloud LB and pass http to Caddy, or (b) keep Caddy doing TLS with shared cert storage (e.g. Caddy's S3/Redis storage plugin). Both work. |
 | **Migrations** | One-shot `migrations` container before service starts. | Becomes a release-time gate (CI step, or leader-election sidecar) so it runs **once per release**, not once per node. |
 | **Logs / metrics** | Loki on local filesystem, Prometheus scraping local targets. | Loki → object-storage backend (S3); Prometheus → remote-write to a managed sink (Grafana Cloud, Mimir) or a dedicated obs node. |
 | **Deploy mechanism** | Manual SSH to one host. | Ansible, or a small CD pipeline that hits each node — same `compose.yaml`, different inventory. |
 
-**Order of operations when the time comes:** managed DB → managed Redis → external object storage → second app node behind LB → shared cert/log storage. Don't add the LB first; it just exposes the single-node infra as the bottleneck.
+**Order of operations when the time comes:** managed DB → managed cache → external object storage → second app node behind LB → shared cert/log storage. Don't add the LB first; it just exposes the single-node infra as the bottleneck.
 
 A separate `docs/SCALING-PLAN.md` should be written when there's real traffic data to design against. This section exists only to prove the beta plan doesn't paint us into a corner.
 
@@ -355,7 +355,7 @@ A separate `docs/SCALING-PLAN.md` should be written when there's real traffic da
 
 1. `__project__-service` Dockerfile + distroless runtime, build + push green locally.
 2. `deployment/compose.yaml` for **postgres + redis + migrations + __project__-service + caddy** only. Prove `api.__project__.com` works end-to-end from outside.
-3. Add MinIO + the two buckets (public/private) + `s3.__project__.com` (mode C). Verify a presigned upload + download.
+3. Add object storage (RustFS) + the two buckets (public/private) + `s3.__project__.com` (mode C). Verify a presigned upload + download.
 4. **Wire mode B into `__project__-service`** — upstream handler already ships in `backbone-bucket` v0.1.0, so this is app-side wiring only:
    - Populate the `bucket` block in [apps/__project__-service/config/application.yml](../apps/__project__-service/config/application.yml) with the `BucketConfig` / `S3Config` / `ServingConfig` YAML from [File serving](#file-serving-backbone-bucket-three-modes).
    - Construct `Arc<dyn ObjectStorage> = Arc::new(S3Storage::new(s3_cfg, serving_cfg)?)` in `build_app()` (currently `apps/__project__-service/src/main.rs:446` builds the bucket module with database only).

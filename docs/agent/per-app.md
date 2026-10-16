@@ -30,5 +30,5 @@ backend via `API_BASE_URL`. See its README for the emulator workflow.
 | Port | What |
 |---|---|
 | 3000 | `__project__-service` (HTTP) — probe as `127.0.0.1:3000`, not `localhost` |
-| 5432 / 6379 / 9000-9001 | postgres / redis / minio |
+| 5432 / 6379 / 9000-9001 | postgres / redis (Valkey) / minio (RustFS; 9001 is its console) |
 | 5173 / 5174 / 5175 / 5176 | webapp dev servers (host `pnpm dev`, or opt-in `frontends` profile) |

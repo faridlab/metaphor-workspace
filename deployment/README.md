@@ -4,7 +4,11 @@ Matches the plan in [../docs/DEPLOYMENT-PLAN.md](../docs/DEPLOYMENT-PLAN.md). Re
 
 > **Looking for local dev?** This runbook is for the prod/uat VPS stack ([compose.yaml](compose.yaml)). Local development uses [compose.dev.yaml](compose.dev.yaml) — see [../docs/LOCAL-DEVELOPMENT.md](../docs/LOCAL-DEVELOPMENT.md).
 
-> **"MinIO" and "redis" are role names.** The `minio` service runs **RustFS** (Apache-2.0, S3- and `mc admin`-compatible) and the `redis` service runs **Valkey** (BSD-3, Redis-protocol compatible). The service names, the `MINIO_*` / `REDIS_URL` env contract, Caddy routes, backups and chaos experiments are unchanged. MinIO Community no longer publishes images or security fixes, and Redis 7.4+ is not open source. A stack that already holds MinIO data should copy its buckets across with `mc mirror` before switching images, rather than pointing RustFS at the old volume.
+> **"MinIO" and "redis" are role names.** The `minio` service runs **RustFS** (Apache-2.0, S3- and `mc admin`-compatible) and the `redis` service runs **Valkey** (BSD-3, Redis-protocol compatible). The service names, the `MINIO_*` / `REDIS_URL` env contract, Caddy routes, backups and chaos experiments are unchanged. MinIO Community no longer publishes images or security fixes, and Redis 7.4+ is not open source.
+>
+> **Migrating an existing stack.** Object storage: copy the objects from the old MinIO to the new RustFS with `rclone sync` (MIT); do not point RustFS at the old MinIO volume (RustFS marks MinIO on-disk compatibility as preview). Cache/queues: drain the queues, then start Valkey empty; do not copy a Redis 7.4 RDB file (its format is newer than Redis 7.2, which Valkey forked from). Users may have to sign in again, so schedule a maintenance window.
+>
+> **Tooling.** The RustFS image has no `mc`. Run it from the bootstrap image used by `minio-init` (`ghcr.io/faridlab/mc`, source in [images/mc/README.md](images/mc/README.md)), e.g. `docker compose --env-file .env.prod run --rm --entrypoint sh minio-init -c 'mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc ls local'` (the alias lives only for that one run, so set it in the same command). The cache CLI is `valkey-cli` (`docker compose exec redis valkey-cli ping`). Logs are shipped by Grafana Alloy (`alloy`, [alloy/config.alloy](alloy/config.alloy)), which replaced Promtail; the Loki labels (`container`, `service`, `stream`) are unchanged. All images are pinned to exact versions, and `compose.yaml` adds a `sha256` digest; Dependabot proposes minor/patch bumps weekly, majors are deliberate.
 
 ## Layout on the VPS
 
@@ -33,7 +37,7 @@ both contexts.
 > **Two-file env model, single ownership.** `deployment/.env.prod` holds
 > orchestration (image tags, infra creds, edge config) — owned by the
 > deployment workspace. `apps/__project__-service/.env.prod` holds runtime
-> config the service binary needs (JWT secret, MinIO access creds, log
+> config the service binary needs (JWT secret, object-storage access creds, log
 > level) — owned by the service repo, with the contract committed at
 > `apps/__project__-service/.env.prod.example`. Compose loads both via
 > stacked `env_file:` entries; the path `../apps/__project__-service/.env.prod`
@@ -190,15 +194,15 @@ Replace the placeholder body in `run_migrate_subcommand()` (in `apps/__project__
 ## File-serving verification (mode A / B / C)
 
 ```bash
-# Mode B (default): authenticated 302 to MinIO presigned URL.
+# Mode B (default): authenticated 302 to a presigned object-storage URL.
 curl -fsS -H "Authorization: Bearer $JWT" \
   -o /dev/null -w '%{http_code} %{redirect_url}\n' \
   https://bucket.${DOMAIN}/product/image/demo.jpg
 
-# Mode A (public fast-path): no service hop, direct MinIO.
+# Mode A (public fast-path): no service hop, direct to object storage.
 curl -fsS https://bucket.${DOMAIN}/public/product/image/demo.jpg -o demo.jpg
 
-# Mode C (raw presigned): service issues a URL, client hits MinIO directly.
+# Mode C (raw presigned): service issues a URL, client hits object storage directly.
 curl -fsS "https://s3.${DOMAIN}/__project__-private/product/image/demo.jpg?X-Amz-Signature=…"
 ```
 

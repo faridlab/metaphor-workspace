@@ -68,7 +68,7 @@ The first `up` is slow:
 
 | Step | Cold | Warm |
 |---|---|---|
-| Pull `postgres` / `redis` / `minio` images | ~30s | seconds |
+| Pull `postgres` / `redis` (Valkey) / `minio` (RustFS) images | ~30s | seconds |
 | Build `__project__-service` dev image (apt + cargo-watch) | ~2-3 min | seconds |
 | `cargo watch` first compile (cooks every `backbone-*` git dep) | ~5-15 min | seconds (uses `cargo_target` volume) |
 
@@ -162,7 +162,7 @@ metaphor docker up --env dev                              # start everything (de
 metaphor docker up --env dev --build                      # rebuild dev images first
 metaphor docker up --env dev --service __project__-service   # only one service (+ its deps)
 metaphor docker down                                      # stop, keep volumes
-metaphor docker down --volumes                            # destructive — wipes pgdata, redis, minio
+metaphor docker down --volumes                            # destructive — wipes pgdata, redis (Valkey), minio (RustFS)
 
 # Inspection
 metaphor docker ps
@@ -183,10 +183,10 @@ Full flag reference: [docs/DEPLOY-COMMANDS.md](DEPLOY-COMMANDS.md).
 
 ```bash
 metaphor docker down              # stop containers; volumes survive
-metaphor docker down --volumes    # also wipe volumes — fresh DB / MinIO / Cargo cache
+metaphor docker down --volumes    # also wipe volumes — fresh DB / object storage / Cargo cache
 ```
 
-Wiping volumes is destructive: Postgres data, MinIO objects, Redis keys, **and** the Rust build cache + `node_modules` are gone. The next `up` will repeat the cold-build timings above. Only use when you genuinely want a clean slate.
+Wiping volumes is destructive: Postgres data, object-storage objects (RustFS), Valkey keys, **and** the Rust build cache + `node_modules` are gone. The next `up` will repeat the cold-build timings above. Only use when you genuinely want a clean slate.
 
 ## Troubleshooting
 
@@ -210,7 +210,7 @@ If you can't free the port, change the host-side mapping in [`compose.dev.yaml`]
 Usually means `pnpm-lock.yaml` is out of date relative to `package.json`. Regenerate it:
 
 ```bash
-docker run --rm -v "$PWD/apps/__project__-webapp-provider:/app" -w /app node:20-alpine \
+docker run --rm -v "$PWD/apps/__project__-webapp-provider:/app" -w /app node:24-alpine \
   sh -c "corepack enable && pnpm install"
 git add apps/__project__-webapp-provider/pnpm-lock.yaml
 ```
