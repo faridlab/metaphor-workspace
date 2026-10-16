@@ -348,7 +348,12 @@ services:
     networks: [backend, observability]
 
   uptime-kuma:
-    image: louislam/uptime-kuma:1.23.17@sha256:3d632903e6af34139a37f18055c4f1bfd9b7205ae1138f1e5e8940ddc1d176f9
+    # 2.x: Debian 12 / Node 22 (1.x ran on end-of-life Debian 10 / Node 18). An existing
+    # 1.x volume migrates on first start; SQLite is preselected so a fresh install
+    # does not stop at the browser database-setup page.
+    image: louislam/uptime-kuma:2.5.6@sha256:9912da7d7d9b6ddc0c2d904beb84d24689c1ed9c33b81419eb9008663a92a329
+    environment:
+      UPTIME_KUMA_DB_TYPE: sqlite
     restart: unless-stopped
     volumes:
       - uptimekuma_data:/app/data
