@@ -20,7 +20,7 @@ name: __project__-metaphora
 services:
   # ───── Data stores ─────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}

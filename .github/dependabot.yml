@@ -1,0 +1,18 @@
+# Keeps the pinned container images current: Dependabot opens one weekly pull
+# request that moves every image tag (and digest, where pinned) to its newest
+# minor or patch release. Major versions are left out on purpose: they change
+# data formats or behaviour (a Postgres major needs a dump and restore), so each
+# one is a deliberate change of its own.
+version: 2
+updates:
+  - package-ecosystem: docker-compose
+    directories:
+      - "/deployment"
+    schedule:
+      interval: weekly
+    groups:
+      container-images:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

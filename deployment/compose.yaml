@@ -25,7 +25,7 @@ name: __project__-metaphora
 services:
   # ───── Data stores ─────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     restart: unless-stopped
     # Tuned for a 16 GB single-host deployment shared with redis, minio,
     # the service, frontends, and the full observability stack. Postgres
@@ -72,7 +72,7 @@ services:
     # Valkey: the BSD-3 Linux Foundation fork of Redis 7.2, wire-compatible with
     # Redis clients (REDIS_URL and the `redis` crate keep working). Redis 7.4+
     # images are RSALv2/SSPL, which is not an open source license.
-    image: valkey/valkey:9.0.6-alpine
+    image: valkey/valkey:9.0.6-alpine@sha256:187679e3bd4036959631e3f03983ab2ba503ab21e6fd0454d508e909db2ee989
     restart: unless-stopped
     command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
@@ -90,7 +90,7 @@ services:
     # unchanged; the server is RustFS (Apache-2.0, S3- and `mc admin`-
     # compatible). MinIO Community stopped publishing images in Oct 2025 and
     # its repository is archived, so it no longer receives security fixes.
-    image: rustfs/rustfs:1.0.2
+    image: rustfs/rustfs:1.0.2@sha256:7e948dad4748bda48f8985fda7195f8cf2e4259427011f6120acc2c9acf51587
     restart: unless-stopped
     command: ["server", "--console-enable", "/data"]
     environment:
@@ -123,7 +123,7 @@ services:
   minio-init:
     # `mc` built from its last source release (deployment/images/mc in the
     # workspace template); MinIO no longer publishes pullable `mc` images.
-    image: ghcr.io/faridlab/mc:RELEASE.2025-08-13T08-35-41Z
+    image: ghcr.io/faridlab/mc:RELEASE.2025-08-13T08-35-41Z@sha256:7c9742963e0a3428704637ac48b130bb5af472dd60663e9ad2cf57fbc0dc74e2
     depends_on:
       minio:
         condition: service_healthy
@@ -285,7 +285,7 @@ services:
 
   # ───── Edge ────────────────────────────────────────────────────────────
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
     ports:
       - "80:80"
@@ -306,7 +306,7 @@ services:
 
   # ───── Monitoring ─────────────────────────────────────────────────────
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -319,7 +319,7 @@ services:
     networks: [observability]
 
   loki:
-    image: grafana/loki:latest
+    image: grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193
     restart: unless-stopped
     command: -config.file=/etc/loki/loki-config.yaml
     volumes:
@@ -331,7 +331,7 @@ services:
   # Promtail, which reached end of life on 2026-03-02; the labels (container,
   # service, stream) are the same, so Loki queries and alerts are unchanged.
   alloy:
-    image: grafana/alloy:v1.20.1
+    image: grafana/alloy:v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
     restart: unless-stopped
     command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
     volumes:
@@ -342,7 +342,7 @@ services:
     depends_on: [loki]
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
     restart: unless-stopped
     env_file: [.env.prod]
     environment:
@@ -361,7 +361,7 @@ services:
 
   cadvisor:
     # Releases from v0.53.0 on are published to ghcr.io only.
-    image: ghcr.io/google/cadvisor:v0.60.6
+    image: ghcr.io/google/cadvisor:v0.60.6@sha256:b8e7d1093144fd088f425ff003d75a4aa405de075db78dae3bc563730b1bd07a
     restart: unless-stopped
     privileged: true
     volumes:
@@ -373,7 +373,7 @@ services:
     networks: [observability]
 
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
     restart: unless-stopped
     command:
       - --path.rootfs=/host
@@ -384,7 +384,7 @@ services:
     networks: [observability]
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:latest
+    image: prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
     restart: unless-stopped
     depends_on:
       postgres:
@@ -394,7 +394,7 @@ services:
     networks: [backend, observability]
 
   uptime-kuma:
-    image: louislam/uptime-kuma:1
+    image: louislam/uptime-kuma:1.23.17@sha256:3d632903e6af34139a37f18055c4f1bfd9b7205ae1138f1e5e8940ddc1d176f9
     restart: unless-stopped
     volumes:
       - uptimekuma_data:/app/data
