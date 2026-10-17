@@ -309,7 +309,8 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_ROOT_URL: https://grafana.${DOMAIN}
       GF_SMTP_ENABLED: ${GRAFANA_SMTP_ENABLED:-false}
-      GF_SMTP_HOST: ${SMTP_HOST:-}
+      # Grafana wants host:port here; SMTP_HOST alone would make it dial port 25.
+      GF_SMTP_HOST: ${SMTP_HOST:-}:${SMTP_PORT:-587}
       GF_SMTP_USER: ${SMTP_USER:-}
       GF_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       GF_SMTP_FROM_ADDRESS: ${EMAIL_FROM:-}
