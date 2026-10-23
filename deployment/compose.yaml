@@ -72,7 +72,7 @@ services:
     # Valkey: the BSD-3 Linux Foundation fork of Redis 7.2, wire-compatible with
     # Redis clients (REDIS_URL and the `redis` crate keep working). Redis 7.4+
     # images are RSALv2/SSPL, which is not an open source license.
-    image: valkey/valkey:9.0.6-alpine@sha256:187679e3bd4036959631e3f03983ab2ba503ab21e6fd0454d508e909db2ee989
+    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
     restart: unless-stopped
     command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
@@ -90,7 +90,7 @@ services:
     # unchanged; the server is RustFS (Apache-2.0, S3- and `mc admin`-
     # compatible). MinIO Community stopped publishing images in Oct 2025 and
     # its repository is archived, so it no longer receives security fixes.
-    image: rustfs/rustfs:1.0.2@sha256:7e948dad4748bda48f8985fda7195f8cf2e4259427011f6120acc2c9acf51587
+    image: rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
     restart: unless-stopped
     command: ["server", "--console-enable", "/data"]
     environment:
@@ -291,7 +291,7 @@ services:
   # Promtail, which reached end of life on 2026-03-02; the labels (container,
   # service, stream) are the same, so Loki queries and alerts are unchanged.
   alloy:
-    image: grafana/alloy:v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
+    image: grafana/alloy:v1.21.0@sha256:9726bfba078de9bc2212c60c6e643238c700b4fe0868ea78cbe03163d03d95bf
     restart: unless-stopped
     command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
     volumes:
