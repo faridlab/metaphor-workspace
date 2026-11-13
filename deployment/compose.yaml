@@ -25,7 +25,7 @@ name: __project__-metaphora
 services:
   # ───── Data stores ─────────────────────────────────────────────────────
   postgres:
-    image: postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     restart: unless-stopped
     # Tuned for a 16 GB single-host deployment shared with redis, minio,
     # the service, frontends, and the full observability stack. Postgres
@@ -72,7 +72,7 @@ services:
     # Valkey: the BSD-3 Linux Foundation fork of Redis 7.2, wire-compatible with
     # Redis clients (REDIS_URL and the `redis` crate keep working). Redis 7.4+
     # images are RSALv2/SSPL, which is not an open source license.
-    image: valkey/valkey:9.0.6-alpine@sha256:187679e3bd4036959631e3f03983ab2ba503ab21e6fd0454d508e909db2ee989
+    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
     restart: unless-stopped
     command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
@@ -90,7 +90,7 @@ services:
     # unchanged; the server is RustFS (Apache-2.0, S3- and `mc admin`-
     # compatible). MinIO Community stopped publishing images in Oct 2025 and
     # its repository is archived, so it no longer receives security fixes.
-    image: rustfs/rustfs:1.0.2@sha256:7e948dad4748bda48f8985fda7195f8cf2e4259427011f6120acc2c9acf51587
+    image: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
     restart: unless-stopped
     command: ["server", "--console-enable", "/data"]
     environment:
@@ -245,7 +245,7 @@ services:
 
   # ───── Edge ────────────────────────────────────────────────────────────
   caddy:
-    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: caddy:2.11.8-alpine@sha256:f6228111e5fafa1a5238258d0858e103f10599b8d1659a146e7726681a002bb9
     restart: unless-stopped
     ports:
       - "80:80"
@@ -266,7 +266,7 @@ services:
 
   # ───── Monitoring ─────────────────────────────────────────────────────
   prometheus:
-    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -279,7 +279,7 @@ services:
     networks: [observability]
 
   loki:
-    image: grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193
+    image: grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28
     restart: unless-stopped
     command: -config.file=/etc/loki/loki-config.yaml
     volumes:
@@ -291,7 +291,7 @@ services:
   # Promtail, which reached end of life on 2026-03-02; the labels (container,
   # service, stream) are the same, so Loki queries and alerts are unchanged.
   alloy:
-    image: grafana/alloy:v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
+    image: grafana/alloy:v1.21.3@sha256:8ab871206bd2d8f89277f53abffee5f452a293980788d52f85fa183a87a505a4
     restart: unless-stopped
     command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
     volumes:
@@ -302,7 +302,7 @@ services:
     depends_on: [loki]
 
   grafana:
-    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
+    image: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?must be set in .env.prod (Grafana login password)}
@@ -357,7 +357,7 @@ services:
     # 2.x: Debian 12 / Node 22 (1.x ran on end-of-life Debian 10 / Node 18). An existing
     # 1.x volume migrates on first start; SQLite is preselected so a fresh install
     # does not stop at the browser database-setup page.
-    image: louislam/uptime-kuma:2.5.6@sha256:9912da7d7d9b6ddc0c2d904beb84d24689c1ed9c33b81419eb9008663a92a329
+    image: louislam/uptime-kuma:2.5.9@sha256:e88415a90dd2f7efecdbc18de0490aff292764a3ac471531bf1d0481725591bd
     environment:
       UPTIME_KUMA_DB_TYPE: sqlite
     restart: unless-stopped
